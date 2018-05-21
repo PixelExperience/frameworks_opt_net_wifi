@@ -198,6 +198,8 @@ public class WifiMetrics {
     /** Wifi Wake metrics */
     private final WifiWakeMetrics mWifiWakeMetrics = new WifiWakeMetrics();
 
+    private boolean mIsMacRandomizationOn = false;
+
     class RouterFingerPrint {
         private WifiMetricsProto.RouterFingerPrint mRouterFingerPrintProto;
         RouterFingerPrint() {
@@ -1511,6 +1513,42 @@ public class WifiMetrics {
     }
 
     /**
+     * Increment number of times we detected a radio mode change to MCC.
+     */
+    public void incrementNumRadioModeChangeToMcc() {
+        synchronized (mLock) {
+            mWifiLogProto.numRadioModeChangeToMcc++;
+        }
+    }
+
+    /**
+     * Increment number of times we detected a radio mode change to SCC.
+     */
+    public void incrementNumRadioModeChangeToScc() {
+        synchronized (mLock) {
+            mWifiLogProto.numRadioModeChangeToScc++;
+        }
+    }
+
+    /**
+     * Increment number of times we detected a radio mode change to SBS.
+     */
+    public void incrementNumRadioModeChangeToSbs() {
+        synchronized (mLock) {
+            mWifiLogProto.numRadioModeChangeToSbs++;
+        }
+    }
+
+    /**
+     * Increment number of times we detected a radio mode change to DBS.
+     */
+    public void incrementNumRadioModeChangeToDbs() {
+        synchronized (mLock) {
+            mWifiLogProto.numRadioModeChangeToDbs++;
+        }
+    }
+
+    /**
      * Increment N-Way network selection decision histograms:
      * Counts the size of various sets of scanDetails within a scan, and increment the occurrence
      * of that size for the associated histogram. There are ten histograms generated for each
@@ -1704,6 +1742,13 @@ public class WifiMetrics {
     public void incrementNumNetworkConnectMessageFailedToSend(String notifierTag) {
         synchronized (mLock) {
             mNumOpenNetworkConnectMessageFailedToSend++;
+        }
+    }
+
+    /** Sets if Connected MAC Randomization feature is enabled */
+    public void setIsMacRandomizationOn(boolean enabled) {
+        synchronized (mLock) {
+            mIsMacRandomizationOn = enabled;
         }
     }
 
@@ -1941,6 +1986,14 @@ public class WifiMetrics {
                         + mWifiLogProto.numPasspointProviderUninstallSuccess);
                 pw.println("mWifiLogProto.numPasspointProvidersSuccessfullyConnected="
                         + mWifiLogProto.numPasspointProvidersSuccessfullyConnected);
+                pw.println("mWifiLogProto.numRadioModeChangeToMcc="
+                        + mWifiLogProto.numRadioModeChangeToMcc);
+                pw.println("mWifiLogProto.numRadioModeChangeToScc="
+                        + mWifiLogProto.numRadioModeChangeToScc);
+                pw.println("mWifiLogProto.numRadioModeChangeToSbs="
+                        + mWifiLogProto.numRadioModeChangeToSbs);
+                pw.println("mWifiLogProto.numRadioModeChangeToDbs="
+                        + mWifiLogProto.numRadioModeChangeToDbs);
                 pw.println("mTotalSsidsInScanHistogram:"
                         + mTotalSsidsInScanHistogram.toString());
                 pw.println("mTotalBssidsInScanHistogram:"
@@ -2050,6 +2103,8 @@ public class WifiMetrics {
 
                 mWifiPowerMetrics.dump(pw);
                 mWifiWakeMetrics.dump(pw);
+
+                pw.println("mWifiLogProto.isMacRandomizationOn=" + mIsMacRandomizationOn);
             }
         }
     }
@@ -2341,6 +2396,7 @@ public class WifiMetrics {
             mWifiLogProto.wpsMetrics = mWpsMetrics;
             mWifiLogProto.wifiPowerStats = mWifiPowerMetrics.buildProto();
             mWifiLogProto.wifiWakeStats = mWifiWakeMetrics.buildProto();
+            mWifiLogProto.isMacRandomizationOn = mIsMacRandomizationOn;
         }
     }
 
@@ -2532,6 +2588,7 @@ public class WifiMetrics {
             case StaEvent.TYPE_NETWORK_AGENT_VALID_NETWORK:
             case StaEvent.TYPE_FRAMEWORK_DISCONNECT:
             case StaEvent.TYPE_SCORE_BREACH:
+            case StaEvent.TYPE_MAC_CHANGE:
                 break;
             default:
                 Log.e(TAG, "Unknown StaEvent:" + type);
@@ -2723,6 +2780,9 @@ public class WifiMetrics {
                 break;
             case StaEvent.TYPE_SCORE_BREACH:
                 sb.append("SCORE_BREACH");
+                break;
+            case StaEvent.TYPE_MAC_CHANGE:
+                sb.append("MAC_CHANGE");
                 break;
             default:
                 sb.append("UNKNOWN " + event.type + ":");

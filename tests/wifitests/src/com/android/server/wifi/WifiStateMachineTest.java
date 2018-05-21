@@ -91,6 +91,7 @@ import com.android.internal.util.StateMachine;
 import com.android.server.wifi.hotspot2.NetworkDetail;
 import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.hotspot2.PasspointProvisioningTestUtil;
+import com.android.server.wifi.nano.WifiMetricsProto.StaEvent;
 import com.android.server.wifi.p2p.WifiP2pServiceImpl;
 import com.android.server.wifi.util.WifiPermissionsUtil;
 import com.android.server.wifi.util.WifiPermissionsWrapper;
@@ -2118,6 +2119,35 @@ public class WifiStateMachineTest {
     }
 
     /**
+     * Verify that RSSI and link layer stats polling works in connected mode
+     */
+    @Test
+    public void verifyConnectedModeRssiPolling() throws Exception {
+        final long startMillis = 1_500_000_000_100L;
+        WifiLinkLayerStats llStats = new WifiLinkLayerStats();
+        llStats.txmpdu_be = 1000;
+        llStats.rxmpdu_bk = 2000;
+        WifiNative.SignalPollResult signalPollResult = new WifiNative.SignalPollResult();
+        signalPollResult.currentRssi = -42;
+        signalPollResult.txBitrate = 65;
+        signalPollResult.associationFrequency = sFreq;
+        when(mWifiNative.getWifiLinkLayerStats(any())).thenReturn(llStats);
+        when(mWifiNative.signalPoll(any())).thenReturn(signalPollResult);
+        when(mClock.getWallClockMillis()).thenReturn(startMillis + 0);
+        mWsm.enableRssiPolling(true);
+        connect();
+        mLooper.dispatchAll();
+        when(mClock.getWallClockMillis()).thenReturn(startMillis + 3333);
+        mLooper.dispatchAll();
+        WifiInfo wifiInfo = mWsm.getWifiInfo();
+        assertEquals(llStats.txmpdu_be, wifiInfo.txSuccess);
+        assertEquals(llStats.rxmpdu_bk, wifiInfo.rxSuccess);
+        assertEquals(signalPollResult.currentRssi, wifiInfo.getRssi());
+        assertEquals(signalPollResult.txBitrate, wifiInfo.getLinkSpeed());
+        assertEquals(sFreq, wifiInfo.getFrequency());
+    }
+
+    /**
      * Verify that calls to start and stop filtering multicast packets are passed on to the IpClient
      * instance.
      */
@@ -2163,6 +2193,8 @@ public class WifiStateMachineTest {
         assertNotEquals(TEST_GLOBAL_MAC_ADDRESS, newMac);
         verify(mWifiConfigManager).setNetworkRandomizedMacAddress(eq(0), eq(newMac));
         verify(mWifiNative).setMacAddress(eq(WIFI_IFACE_NAME), eq(newMac));
+        verify(mWifiMetrics)
+                .logStaEvent(eq(StaEvent.TYPE_MAC_CHANGE), any(WifiConfiguration.class));
         assertEquals(mWsm.getWifiInfo().getMacAddress(), newMac.toString());
     }
 
@@ -2209,6 +2241,8 @@ public class WifiStateMachineTest {
         verify(mWifiConfigManager, never())
                 .setNetworkRandomizedMacAddress(eq(0), any(MacAddress.class));
         verify(mWifiNative, never()).setMacAddress(eq(WIFI_IFACE_NAME), any(MacAddress.class));
+        verify(mWifiMetrics, never())
+                .logStaEvent(eq(StaEvent.TYPE_MAC_CHANGE), any(WifiConfiguration.class));
         assertEquals(mWsm.getWifiInfo().getMacAddress(), oldMac);
     }
 
@@ -2239,6 +2273,25 @@ public class WifiStateMachineTest {
 
         verify(config).getOrCreateRandomizedMacAddress();
         verify(mWifiNative, never()).setMacAddress(eq(WIFI_IFACE_NAME), any(MacAddress.class));
+    }
+
+    /**
+     * Verifies that turning on/off Connected MAC Randomization correctly updates metrics.
+     */
+    @Test
+    public void testUpdateConnectedMacRandomizationSettingMetrics() throws Exception {
+        // Called during setUp
+        verify(mWifiMetrics).setIsMacRandomizationOn(false);
+
+        when(mFrameworkFacade.getIntegerSetting(mContext,
+                Settings.Global.WIFI_CONNECTED_MAC_RANDOMIZATION_ENABLED, 0)).thenReturn(1);
+        mContentObserver.onChange(false);
+        verify(mWifiMetrics).setIsMacRandomizationOn(true);
+
+        when(mFrameworkFacade.getIntegerSetting(mContext,
+                Settings.Global.WIFI_CONNECTED_MAC_RANDOMIZATION_ENABLED, 0)).thenReturn(0);
+        mContentObserver.onChange(false);
+        verify(mWifiMetrics, times(2)).setIsMacRandomizationOn(false);
     }
 
     /**
@@ -2313,5 +2366,6 @@ public class WifiStateMachineTest {
         mWsm.setOperationalMode(WifiStateMachine.DISABLED_MODE, null);
         mLooper.dispatchAll();
         verify(mIpClient).shutdown();
+        verify(mIpClient).awaitShutdown();
     }
 }

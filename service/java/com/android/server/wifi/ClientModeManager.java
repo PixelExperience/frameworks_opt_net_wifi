@@ -133,6 +133,13 @@ public class ClientModeManager implements ActiveModeManager {
             @Override
             public void onDestroyed(String ifaceName) {
                 if (mClientInterfaceName != null && mClientInterfaceName.equals(ifaceName)) {
+                    Log.d(TAG, "STA iface " + ifaceName + " was destroyed, stopping client mode");
+
+                    // we must immediately clean up state in WSM to unregister all client mode
+                    // related objects
+                    // Note: onDestroyed is only called from the WSM thread
+                    mWifiStateMachine.handleIfaceDestroyed();
+
                     sendMessage(CMD_INTERFACE_DESTROYED);
                 }
             }
@@ -189,6 +196,8 @@ public class ClientModeManager implements ActiveModeManager {
                             break;
                         }
                         sendScanAvailableBroadcast(false);
+                        mScanRequestProxy.enableScanningForHiddenNetworks(false);
+                        mScanRequestProxy.clearScanResults();
                         transitionTo(mStartedState);
                         break;
                     default:
@@ -258,6 +267,7 @@ public class ClientModeManager implements ActiveModeManager {
 
                         updateWifiState(WifiManager.WIFI_STATE_DISABLING,
                                         WifiManager.WIFI_STATE_ENABLED);
+                        mClientInterfaceName = null;
                         transitionTo(mIdleState);
                         break;
                     default:
@@ -267,24 +277,20 @@ public class ClientModeManager implements ActiveModeManager {
             }
 
             /**
-             * Clean up state, unregister listeners and send broadcast to tell WifiScanner
-             * that wifi is disabled.
+             * Clean up state, unregister listeners and update wifi state.
              */
             @Override
             public void exit() {
-                if (mClientInterfaceName == null) {
-                    return;
-                }
                 mWifiStateMachine.setOperationalMode(WifiStateMachine.DISABLED_MODE, null);
-                mWifiNative.teardownInterface(mClientInterfaceName);
-                // let WifiScanner know that wifi is down.
-                sendScanAvailableBroadcast(false);
+
+                if (mClientInterfaceName != null) {
+                    mWifiNative.teardownInterface(mClientInterfaceName);
+                    mClientInterfaceName = null;
+                    mIfaceIsUp = false;
+                }
+
                 updateWifiState(WifiManager.WIFI_STATE_DISABLED,
                                 WifiManager.WIFI_STATE_DISABLING);
-                mScanRequestProxy.enableScanningForHiddenNetworks(false);
-                mScanRequestProxy.clearScanResults();
-                mClientInterfaceName = null;
-                mIfaceIsUp = false;
             }
         }
 
