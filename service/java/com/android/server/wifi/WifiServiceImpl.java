@@ -58,6 +58,8 @@ import android.net.Network;
 import android.net.NetworkUtils;
 import android.net.Uri;
 import android.net.ip.IpClient;
+import android.net.StaticIpConfiguration;
+import android.net.IpConfiguration;
 import android.net.wifi.ISoftApCallback;
 import android.net.wifi.IWifiManager;
 import android.net.wifi.ScanResult;
@@ -70,6 +72,7 @@ import android.net.wifi.WifiSsid;
 import android.net.wifi.hotspot2.IProvisioningCallback;
 import android.net.wifi.hotspot2.OsuProvider;
 import android.net.wifi.hotspot2.PasspointConfiguration;
+import android.net.wifi.WifiDppConfig;
 import android.os.AsyncTask;
 import android.os.BatteryStats;
 import android.os.Binder;
@@ -148,6 +151,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
     private static final int RUN_WITH_SCISSORS_TIMEOUT_MILLIS = 4000;
 
     final WifiStateMachine mWifiStateMachine;
+    final WifiStateMachinePrime mWifiStateMachinePrime;
     final ScanRequestProxy mScanRequestProxy;
 
     private final Context mContext;
@@ -453,6 +457,7 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         mUserManager = mWifiInjector.getUserManager();
         mCountryCode = mWifiInjector.getWifiCountryCode();
         mWifiStateMachine = mWifiInjector.getWifiStateMachine();
+        mWifiStateMachinePrime = mWifiInjector.getWifiStateMachinePrime();
         mWifiStateMachine.enableRssiPolling(true);
         mScanRequestProxy = mWifiInjector.getScanRequestProxy();
         mSettingsStore = mWifiInjector.getWifiSettingsStore();
@@ -966,10 +971,17 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                             LocalOnlyHotspotCallback.ERROR_INCOMPATIBLE_MODE);
                     break;
                 case WifiManager.IFACE_IP_MODE_CONFIGURATION_ERROR:
-                    // there was an error setting up the hotspot...  trigger onFailed for the
-                    // registered LOHS requestors
-                    sendHotspotFailedMessageToAllLOHSRequestInfoEntriesLocked(
-                            LocalOnlyHotspotCallback.ERROR_GENERIC);
+                    Slog.d(TAG, "IP mode config error - need to clean up");
+                    if (mLocalOnlyHotspotRequests.isEmpty()) {
+                        Slog.d(TAG, "no LOHS requests, stop softap");
+                        stopSoftAp();
+                    } else {
+                        Slog.d(TAG, "we have LOHS requests, clean them up");
+                        // there was an error setting up the hotspot...  trigger onFailed for the
+                        // registered LOHS requestors
+                        sendHotspotFailedMessageToAllLOHSRequestInfoEntriesLocked(
+                                LocalOnlyHotspotCallback.ERROR_GENERIC);
+                    }
                     updateInterfaceIpStateInternal(null, WifiManager.IFACE_IP_MODE_UNSPECIFIED);
                     break;
                 case WifiManager.IFACE_IP_MODE_UNSPECIFIED:
@@ -2142,6 +2154,10 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         mWifiStateMachine.deauthenticateNetwork(mWifiStateMachineChannel, holdoff, ess);
     }
 
+    public String getCapabilities(String capaType) {
+        return mWifiStateMachine.getCapabilities(capaType);
+    }
+
     /**
      * Set the country code
      * @param countryCode ISO 3166 country code.
@@ -2514,6 +2530,8 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             pw.println();
             mWifiMulticastLockManager.dump(pw);
             pw.println();
+            mWifiStateMachinePrime.dump(fd, pw, args);
+            pw.println();
             mWifiStateMachine.dump(fd, pw, args);
             pw.println();
             mWifiStateMachine.updateWifiMetrics();
@@ -2813,5 +2831,130 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             mLog.trace("Subscription provisioning started with %")
                     .c(provider.toString()).flush();
         }
+    }
+
+    /**
+     * Add the DPP bootstrap info obtained from QR code.
+     *
+     * @param uri:The URI obtained from the QR code reader.
+     *
+     * @return: Handle to strored info else -1 on failure
+     * @hide
+     */
+    @Override
+    public int dppAddBootstrapQrCode(String uri) {
+        return mWifiStateMachine.syncDppAddBootstrapQrCode(mWifiStateMachineChannel, uri);
+    }
+
+    /**
+     * Generate bootstrap URI based on the passed arguments
+     *
+     * @param config – bootstrap generate config
+     *
+     * @return: Handle to strored URI info else -1 on failure
+     */
+    @Override
+    public int dppBootstrapGenerate(WifiDppConfig config) {
+        return mWifiStateMachine.syncDppBootstrapGenerate(mWifiStateMachineChannel, config);
+    }
+
+    /**
+     * Get bootstrap URI based on bootstrap ID
+     *
+     * @param bootstrap_id: Stored bootstrap ID
+     *
+     * @return: URI string else -1 on failure
+     */
+    @Override
+    public String dppGetUri(int bootstrap_id) {
+        return mWifiStateMachine.syncDppGetUri(mWifiStateMachineChannel, bootstrap_id);
+    }
+
+    /**
+     * Remove bootstrap URI based on bootstrap ID.
+     *
+     * @param bootstrap_id: Stored bootstrap ID
+     *
+     * @return: 0 – Success or -1 on failure
+     */
+    @Override
+    public int dppBootstrapRemove(int bootstrap_id) {
+        return mWifiStateMachine.syncDppBootstrapRemove(mWifiStateMachineChannel, bootstrap_id);
+    }
+
+    /**
+     * start listen on the channel specified waiting to receive
+     * the DPP Authentication request.
+     *
+     * @param frequency: DPP listen frequency
+     * @param dpp_role: Configurator/Enrollee role
+     * @param qr_mutual: Mutual authentication required
+     * @param netrole_ap: network role
+     *
+     * @return: Returns 0 if a DPP-listen work is successfully
+     *  queued and -1 on failure.
+     */
+    @Override
+    public int dppListen(String frequency, int dpp_role, boolean qr_mutual, boolean netrole_ap) {
+        return mWifiStateMachine.syncDppListen(mWifiStateMachineChannel, frequency, dpp_role,
+                                               qr_mutual, netrole_ap);
+    }
+
+    /**
+     * stop ongoing dpp listen
+     */
+    @Override
+    public void dppStopListen() {
+        mWifiStateMachine.dppStopListen(mWifiStateMachineChannel);
+    }
+
+    /**
+     * Adds the DPP configurator
+     *
+     * @param curve curve used for dpp encryption
+     * @param key private key
+     * @param expiry timeout in seconds
+     *
+     * @return: Identifier of the added configurator or -1 on failure
+     */
+    @Override
+    public int dppConfiguratorAdd(String curve, String key, int expiry) {
+        return mWifiStateMachine.syncDppConfiguratorAdd(
+            mWifiStateMachineChannel, curve, key, expiry);
+    }
+
+    /**
+     * Remove the added configurator through dppConfiguratorAdd.
+     *
+     * @param config_id: DPP Configurator ID
+     *
+     * @return: Handle to strored info else -1 on failure
+     */
+    @Override
+    public int dppConfiguratorRemove(int config_id) {
+        return mWifiStateMachine.syncDppConfiguratorRemove(mWifiStateMachineChannel, config_id);
+    }
+
+    /**
+     * Start DPP authentication and provisioning with the specified peer
+     *
+     * @param config – dpp auth init config
+     *
+     * @return: 0 if DPP Authentication request was transmitted and -1 on failure
+     */
+    @Override
+    public int  dppStartAuth(WifiDppConfig config) {
+        return mWifiStateMachine.syncDppStartAuth(mWifiStateMachineChannel, config);
+    }
+
+    /**
+     * Retrieve Private key to be used for configurator
+     *
+     * @param id: id of configurator object
+     *
+     * @return: KEY string else -1 on failure
+     */
+    public String dppConfiguratorGetKey(int id) {
+        return mWifiStateMachine.syncDppConfiguratorGetKey(mWifiStateMachineChannel, id);
     }
 }
