@@ -260,8 +260,9 @@ public class SupplicantStaNetworkHal {
             if (config == null) return false;
             /** SSID */
             if (config.SSID != null) {
-                if (!setSsid(NativeUtil.decodeSsid(config.SSID))) {
-                    Log.e(TAG, "failed to set SSID: " + config.SSID);
+                String ssid = WifiGbk.getRealSsid(config); // wifigbk++
+                if (!setSsid(NativeUtil.decodeSsid(ssid))) {
+                    Log.e(TAG, "failed to set SSID: " + ssid);
                     return false;
                 }
             }
@@ -734,6 +735,12 @@ public class SupplicantStaNetworkHal {
                    return false;
                }
            }
+            /** SIM Number */
+            eapParam = eapConfig.getFieldValue(WifiEnterpriseConfig.KEY_SIMNUM);
+            if (!TextUtils.isEmpty(eapParam)
+                && !setVendorSimNumber(Integer.parseInt(eapParam))) {
+                Log.e(TAG, ssid + ": failed to set VendorSimNumber : " + eapParam);
+            }
 
             return true;
         }
@@ -1861,6 +1868,19 @@ public class SupplicantStaNetworkHal {
             if (!checkISupplicantVendorStaNetworkAndLogFailure(methodStr)) return false;
             try {
                 SupplicantStatus status =  mISupplicantVendorStaNetwork.setDppCsign(csign);
+                return checkVendorStatusAndLogFailure(status, methodStr);
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+                return false;
+            }
+        }
+    }
+    private boolean setVendorSimNumber(int SimNum) {
+        synchronized (mLock) {
+            final String methodStr = "setVendorSimNumber";
+            if (!checkISupplicantVendorStaNetworkAndLogFailure(methodStr)) return false;
+            try {
+                SupplicantStatus status =  mISupplicantVendorStaNetwork.setVendorSimNumber(SimNum);
                 return checkVendorStatusAndLogFailure(status, methodStr);
             } catch (RemoteException e) {
                 handleRemoteException(e, methodStr);

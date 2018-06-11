@@ -3569,6 +3569,10 @@ public class WifiStateMachine extends StateMachine {
                     mTemporarilyDisconnectWifi = (message.arg1 == 1);
                     replyToMessage(message, WifiP2pServiceImpl.DISCONNECT_WIFI_RESPONSE);
                     break;
+                case WifiP2pServiceImpl.SET_MIRACAST_MODE:
+                    if (mVerboseLoggingEnabled) logd("SET_MIRACAST_MODE: " + (int)message.arg1);
+                    mWifiConnectivityManager.saveMiracastMode((int)message.arg1);
+                    break;
                 /* Link configuration (IP address, DNS, ...) changes notified via netlink */
                 case CMD_UPDATE_LINKPROPERTIES:
                     updateLinkProperties((LinkProperties) message.obj);
@@ -4469,6 +4473,7 @@ public class WifiStateMachine extends StateMachine {
                     if (config != null) {
                         mWifiInfo.setBSSID(mLastBssid);
                         mWifiInfo.setNetworkId(mLastNetworkId);
+                        mWifiInfo.setMacAddress(mWifiNative.getMacAddress(mInterfaceName));
 
                         ScanDetailCache scanDetailCache =
                                 mWifiConfigManager.getScanDetailCacheForNetwork(config.networkId);
@@ -5087,6 +5092,7 @@ public class WifiStateMachine extends StateMachine {
                     mWifiInfo.setBSSID((String) message.obj);
                     mLastNetworkId = message.arg1;
                     mWifiInfo.setNetworkId(mLastNetworkId);
+                    mWifiInfo.setMacAddress(mWifiNative.getMacAddress(mInterfaceName));
                     if(!mLastBssid.equals(message.obj)) {
                         mLastBssid = (String) message.obj;
                         sendNetworkStateChangeBroadcast(mLastBssid);
@@ -5547,10 +5553,22 @@ public class WifiStateMachine extends StateMachine {
                                         config.networkId, false);
                                 mWifiConfigManager.updateNetworkSelectionStatus(config.networkId,
                                         WifiConfiguration.NetworkSelectionStatus
-                                        .DISABLED_NO_INTERNET);
+                                        .DISABLED_NO_INTERNET_PERMANENT);
+                            } else {
+                                mWifiConfigManager.incrementNetworkNoInternetAccessReports(
+                                        config.networkId);
+                                // If this was not the last selected network, update network
+                                // selection status to temporarily disable the network.
+                                if (mWifiConfigManager.getLastSelectedNetwork() != config.networkId
+                                        && !config.noInternetAccessExpected) {
+                                    Log.i(TAG, "Temporarily disabling network because of"
+                                            + "no-internet access");
+                                    mWifiConfigManager.updateNetworkSelectionStatus(
+                                            config.networkId,
+                                            WifiConfiguration.NetworkSelectionStatus
+                                                    .DISABLED_NO_INTERNET_TEMPORARY);
+                                }
                             }
-                            mWifiConfigManager.incrementNetworkNoInternetAccessReports(
-                                    config.networkId);
                         }
                     }
                     return HANDLED;
@@ -5559,6 +5577,10 @@ public class WifiStateMachine extends StateMachine {
                         config = getCurrentWifiConfiguration();
                         if (config != null) {
                             // re-enable autojoin
+                            mWifiConfigManager.updateNetworkSelectionStatus(
+                                    config.networkId,
+                                    WifiConfiguration.NetworkSelectionStatus
+                                            .NETWORK_SELECTION_ENABLE);
                             mWifiConfigManager.setNetworkValidatedInternetAccess(
                                     config.networkId, true);
                         }
