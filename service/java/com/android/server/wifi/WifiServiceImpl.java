@@ -35,7 +35,6 @@ import static com.android.server.wifi.WifiController.CMD_EMERGENCY_CALL_STATE_CH
 import static com.android.server.wifi.WifiController.CMD_EMERGENCY_MODE_CHANGED;
 import static com.android.server.wifi.WifiController.CMD_SCAN_ALWAYS_MODE_CHANGED;
 import static com.android.server.wifi.WifiController.CMD_SET_AP;
-import static com.android.server.wifi.WifiController.CMD_SET_DUAL_AP;
 import static com.android.server.wifi.WifiController.CMD_USER_PRESENT;
 import static com.android.server.wifi.WifiController.CMD_WIFI_TOGGLED;
 
@@ -936,7 +935,8 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             }
         }
 
-        if (enable && mWifiApConfigStore.getDualSapStatus())
+        if (enable && mWifiApConfigStore.getDualSapStatus()
+              && (apEnabled || (mWifiApState == WifiManager.WIFI_AP_STATE_ENABLING)))
             stopSoftAp();
 
         if (!mIsControllerStarted) {
@@ -1103,10 +1103,11 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         mLog.trace("startSoftApInternal uid=% mode=%")
                 .c(Binder.getCallingUid()).c(mode).flush();
 
-        // This will internally check for DUAL_BAND and take action.
-        startDualSapMode(wifiConfig, true);
+        wifiConfig = setDualSapMode(wifiConfig);
 
-        if (startSoftApInRepeaterMode(mode)) {
+        mSoftApExtendingWifi = isCurrentStaShareThisAp();
+        if (mSoftApExtendingWifi) {
+            startSoftApInRepeaterMode(mode, wifiConfig);
             return true;
         }
 
@@ -1153,9 +1154,6 @@ public class WifiServiceImpl extends IWifiManager.Stub {
      */
     private boolean stopSoftApInternal() {
         mLog.trace("stopSoftApInternal uid=%").c(Binder.getCallingUid()).flush();
-
-        if (mWifiApConfigStore.getDualSapStatus())
-            startDualSapMode(null, false);
 
         mSoftApExtendingWifi = false;
         mWifiController.sendMessage(CMD_SET_AP, 0, 0);
@@ -1718,6 +1716,21 @@ public class WifiServiceImpl extends IWifiManager.Stub {
             Slog.e(TAG, "Invalid WifiConfiguration");
             return false;
         }
+    }
+
+    /**
+     * Method used to inform user of Ap Configuration conversion due to hardware.
+     */
+    @Override
+    public void notifyUserOfApBandConversion(String packageName) {
+        enforceNetworkSettingsPermission();
+
+        if (mVerboseLoggingEnabled) {
+            mLog.info("notifyUserOfApBandConversion uid=% packageName=%")
+                    .c(Binder.getCallingUid()).c(packageName).flush();
+        }
+
+        mWifiApConfigStore.notifyUserOfApBandConversion(packageName);
     }
 
     /**
@@ -2700,6 +2713,11 @@ public class WifiServiceImpl extends IWifiManager.Stub {
                 wifiScoreReport.dump(fd, pw, args);
             }
             pw.println();
+            SarManager sarManager = mWifiInjector.getSarManager();
+            if (sarManager != null) {
+                sarManager.dump(fd, pw, args);
+            }
+            pw.println();
         }
     }
 
@@ -3110,41 +3128,30 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         return mWifiStateMachine.syncDppConfiguratorGetKey(mWifiStateMachineChannel, id);
     }
 
-    private boolean startDualSapMode(WifiConfiguration apConfig, boolean enable) {
+    private WifiConfiguration setDualSapMode(WifiConfiguration apConfig) {
+        WifiConfiguration newApConfig;
+        boolean bandUpdated = false;
+
         if (apConfig == null)
-            apConfig = mWifiApConfigStore.getApConfiguration();
+            newApConfig = new WifiConfiguration(mWifiApConfigStore.getApConfiguration());
+        else
+            newApConfig = new WifiConfiguration(apConfig);
 
-        // If dual sap property is set, enable/disable softap for dual sap.
-        if (enable && SystemProperties.get("persist.vendor.wifi.softap.dualband", "0").equals("1")) {
-            mPrevApBand = apConfig.apBand;
-            apConfig.apBand = WifiConfiguration.AP_BAND_DUAL;
-        } else if(apConfig.apBand == WifiConfiguration.AP_BAND_DUAL) {
-            apConfig.apBand = mPrevApBand;
+
+        // If dual sap property is set, force softap in dual sap.
+        if (SystemProperties.get("persist.vendor.wifi.softap.dualband", "0").equals("1")) {
+            newApConfig.apBand = WifiConfiguration.AP_BAND_DUAL;
+            bandUpdated = true;
         }
 
-        // Check if this request is for DUAL sap mode.
-        if (enable && (apConfig.apBand != WifiConfiguration.AP_BAND_DUAL)) {
-            Slog.e(TAG, "Continue with Single SAP Mode.");
-            return false;
+        if (newApConfig.apBand == WifiConfiguration.AP_BAND_DUAL) {
+            mLog.trace("setDualSapMode uid=%").c(Binder.getCallingUid()).flush();
+            mWifiApConfigStore.setDualSapStatus(true);
+        } else {
+            mWifiApConfigStore.setDualSapStatus(false);
         }
 
-        mLog.trace("startDualSapMode uid=% enable=%").c(Binder.getCallingUid()).c(enable).flush();
-
-        if (enable && mWifiApConfigStore.getDualSapStatus()) {
-            Slog.d(TAG, "DUAL Sap Mode already enabled. Do nothing!!");
-            return true;
-        }
-
-        boolean apEnabled = mWifiApState != WifiManager.WIFI_AP_STATE_DISABLED;
-
-        // Reset StateMachine(s) to Appropriate State(s)
-        if (enable && apEnabled)
-            mWifiController.sendMessage(CMD_SET_AP, 0, 0);
-
-        if (enable)
-            mWifiController.sendMessage(CMD_SET_DUAL_AP);
-
-        return true;
+        return bandUpdated ? newApConfig : apConfig;
     }
 
     /* API to check whether SoftAp extending current sta connected AP network*/
@@ -3165,30 +3172,24 @@ public class WifiServiceImpl extends IWifiManager.Stub {
         return false;
     }
 
-    private boolean startSoftApInRepeaterMode(int mode) {
-        WifiConfiguration currentStaConfig = mWifiStateMachine.getCurrentWifiConfiguration();
-        Slog.d(TAG,"Repeater mode: CurrentStaConfig - " + currentStaConfig);
-        if (isCurrentStaShareThisAp()) {
-            SoftApModeConfiguration softApConfig = new SoftApModeConfiguration(mode, currentStaConfig);
-            WifiConfigManager wifiConfigManager = mWifiInjector.getWifiConfigManager();
-            currentStaConfig = wifiConfigManager.getConfiguredNetworkWithPassword(currentStaConfig.networkId);
-            softApConfig.mConfig.SSID = WifiInfo.removeDoubleQuotes(currentStaConfig.SSID);
-            softApConfig.mConfig.apBand = currentStaConfig.apBand;
-            softApConfig.mConfig.apChannel = currentStaConfig.apChannel;
-            softApConfig.mConfig.hiddenSSID = currentStaConfig.hiddenSSID;
-            softApConfig.mConfig.preSharedKey = WifiInfo.removeDoubleQuotes(currentStaConfig.preSharedKey);
-            softApConfig.mConfig.allowedKeyManagement = currentStaConfig.allowedKeyManagement;
-            WifiInfo wifiInfo = mWifiStateMachine.getWifiInfo();
-            if (wifiInfo != null && softApConfig.mConfig.apChannel == 0) {
-                softApConfig.mConfig.apChannel = ApConfigUtil.convertFrequencyToChannel(wifiInfo.getFrequency());
-            }
-            Slog.d(TAG,"Repeater mode: startSoftAp with config - " + softApConfig.mConfig);
-            mWifiController.sendMessage(CMD_SET_AP, 1, 0, softApConfig);
-            mSoftApExtendingWifi = true;
-            return true;
-        }
-        mSoftApExtendingWifi = false;
-        return false;
+    private void startSoftApInRepeaterMode(int mode, WifiConfiguration apConfig) {
+        WifiInfo wifiInfo = mWifiStateMachine.getWifiInfo();
+        WifiConfigManager wifiConfigManager = mWifiInjector.getWifiConfigManager();
+        WifiConfiguration currentStaConfig = wifiConfigManager.getConfiguredNetworkWithPassword(wifiInfo.getNetworkId());
+        SoftApModeConfiguration softApConfig = new SoftApModeConfiguration(mode, currentStaConfig);
+
+        // Remove double quotes in SSID and psk
+        softApConfig.mConfig.SSID = WifiInfo.removeDoubleQuotes(softApConfig.mConfig.SSID);
+        softApConfig.mConfig.preSharedKey = WifiInfo.removeDoubleQuotes(softApConfig.mConfig.preSharedKey);
+
+        // Get band info from SoftAP configuration
+        if (apConfig == null)
+            softApConfig.mConfig.apBand = mWifiApConfigStore.getApConfiguration().apBand;
+        else
+            softApConfig.mConfig.apBand = apConfig.apBand;
+
+        Slog.d(TAG,"Repeater mode config - " + softApConfig.mConfig);
+        mWifiController.sendMessage(CMD_SET_AP, 1, 0, softApConfig);
     }
 
     public boolean isWifiCoverageExtendFeatureEnabled() {
