@@ -95,6 +95,9 @@ public class SoftApManager implements ActiveModeManager {
     private int mQCNumAssociatedStations = 0;
     private boolean mTimeoutEnabled = false;
     private String[] mdualApInterfaces;
+    private boolean expectedStop = false;
+
+    private final SarManager mSarManager;
 
     /**
      * Listener for soft AP events.
@@ -133,7 +136,8 @@ public class SoftApManager implements ActiveModeManager {
                          @NonNull WifiManager.SoftApCallback callback,
                          @NonNull WifiApConfigStore wifiApConfigStore,
                          @NonNull SoftApModeConfiguration apConfig,
-                         @NonNull WifiMetrics wifiMetrics) {
+                         @NonNull WifiMetrics wifiMetrics,
+                         @NonNull SarManager sarManager) {
         mContext = context;
         mFrameworkFacade = framework;
         mWifiNative = wifiNative;
@@ -149,6 +153,7 @@ public class SoftApManager implements ActiveModeManager {
         }
         mWifiMetrics = wifiMetrics;
         mdualApInterfaces = new String[2];
+        mSarManager = sarManager;
         mStateMachine = new SoftApStateMachine(looper);
     }
 
@@ -164,6 +169,7 @@ public class SoftApManager implements ActiveModeManager {
      */
     public void stop() {
         Log.d(TAG, " currentstate: " + getCurrentStateName());
+        expectedStop = true;
         if (mApInterfaceName != null) {
             if (mIfaceIsUp) {
                 updateApState(WifiManager.WIFI_AP_STATE_DISABLING,
@@ -244,6 +250,26 @@ public class SoftApManager implements ActiveModeManager {
             Log.e(TAG, "Unable to start soft AP without valid configuration");
             return ERROR_GENERIC;
         }
+        // Setup country code
+        if (TextUtils.isEmpty(mCountryCode)) {
+            if (config.apBand == WifiConfiguration.AP_BAND_5GHZ) {
+                // Country code is mandatory for 5GHz band.
+                Log.e(TAG, "Invalid country code, required for setting up "
+                        + "soft ap in 5GHz");
+                return ERROR_GENERIC;
+            }
+            // Absence of country code is not fatal for 2Ghz & Any band options.
+        } else if (!mWifiNative.setCountryCodeHal(
+                mApInterfaceName, mCountryCode.toUpperCase(Locale.ROOT))) {
+            if (config.apBand == WifiConfiguration.AP_BAND_5GHZ) {
+                // Return an error if failed to set country code when AP is configured for
+                // 5GHz band.
+                Log.e(TAG, "Failed to set country code, required for setting up "
+                        + "soft ap in 5GHz");
+                return ERROR_GENERIC;
+            }
+            // Failure to set country code is not fatal for 2Ghz & Any band options.
+        }
 
         // Make a copy of configuration for updating AP band and channel.
         WifiConfiguration localConfig = new WifiConfiguration(config);
@@ -257,18 +283,6 @@ public class SoftApManager implements ActiveModeManager {
             return result;
         }
 
-        // Setup country code if it is provided.
-        if (mCountryCode != null) {
-            // Country code is mandatory for 5GHz band, return an error if failed to set
-            // country code when AP is configured for 5GHz band.
-            if (!mWifiNative.setCountryCodeHal(
-                    mApInterfaceName, mCountryCode.toUpperCase(Locale.ROOT))
-                    && config.apBand == WifiConfiguration.AP_BAND_5GHZ) {
-                Log.e(TAG, "Failed to set country code, required for setting up "
-                        + "soft ap in 5GHz");
-                return ERROR_GENERIC;
-            }
-        }
         if (localConfig.hiddenSSID) {
             Log.d(TAG, "SoftAP is a hidden network");
         }
@@ -334,7 +348,19 @@ public class SoftApManager implements ActiveModeManager {
 
         private final InterfaceCallback mWifiNativeDualIfaceCallback = new InterfaceCallback() {
             @Override
-            public void onDestroyed(String ifaceName) { }
+            public void onDestroyed(String ifaceName) {
+                // one of the dual interface is destroyed by native layers. trigger full cleanup.
+                if (!expectedStop) {
+                    Log.e(TAG, "One of Dual interface ("+ifaceName+") destroyed. trigger cleanup");
+                    // Avoid cleaning the interface which is already destroyed.
+                    if (ifaceName.equals(mdualApInterfaces[0]))
+                        mdualApInterfaces[0] = "";
+                    else if (ifaceName.equals(mdualApInterfaces[1]))
+                        mdualApInterfaces[1] = "";
+
+                    stop();
+                }
+            }
 
             @Override
             public void onUp(String ifaceName) { }
@@ -360,6 +386,7 @@ public class SoftApManager implements ActiveModeManager {
                     TextUtils.isEmpty(mdualApInterfaces[1]) ||
                     TextUtils.isEmpty(mApInterfaceName)) {
                 Log.e(TAG, "setup failure when creating dual ap interface(s).");
+                stopSoftAp();
                 updateApState(WifiManager.WIFI_AP_STATE_FAILED,
                         WifiManager.WIFI_AP_STATE_DISABLED,
                         WifiManager.SAP_START_FAILURE_GENERAL);
@@ -629,6 +656,9 @@ public class SoftApManager implements ActiveModeManager {
                 if (mSettingObserver != null) {
                     mSettingObserver.register();
                 }
+                
+                mSarManager.setSapWifiState(WifiManager.WIFI_AP_STATE_ENABLED);
+
                 Log.d(TAG, "Resetting num stations on start");
                 mNumAssociatedStations = 0;
                 mQCNumAssociatedStations = 0;
@@ -652,6 +682,8 @@ public class SoftApManager implements ActiveModeManager {
                 mWifiMetrics.addSoftApUpChangedEvent(false, mMode);
                 updateApState(WifiManager.WIFI_AP_STATE_DISABLED,
                         WifiManager.WIFI_AP_STATE_DISABLING, 0);
+
+                mSarManager.setSapWifiState(WifiManager.WIFI_AP_STATE_DISABLED);
                 mApInterfaceName = null;
                 mDataInterfaceName = null;
                 mIfaceIsUp = false;

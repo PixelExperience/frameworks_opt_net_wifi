@@ -101,7 +101,6 @@ public class WifiController extends StateMachine {
 
     // Vendor specific message. start from Base + 30
     static final int CMD_DELAY_DISCONNECT                       = BASE + 30;
-    static final int CMD_SET_DUAL_AP                            = BASE + 31;
 
     private DefaultState mDefaultState = new DefaultState();
     private StaEnabledState mStaEnabledState = new StaEnabledState();
@@ -294,6 +293,10 @@ public class WifiController extends StateMachine {
                 case CMD_SET_AP:
                     // note: CMD_SET_AP is handled/dropped in ECM mode - will not start here
 
+                    // If request is to start dual sap, turn off sta.
+                    if (msg.arg1 == 1 && mWifiApConfigStore.getDualSapStatus())
+                        transitionTo(mStaDisabledState);
+
                     // first make sure we aren't in airplane mode
                     if (mSettingsStore.isAirplaneModeOn()) {
                         log("drop softap requests when in airplane mode");
@@ -323,39 +326,20 @@ public class WifiController extends StateMachine {
                     break;
                 case CMD_EMERGENCY_CALL_STATE_CHANGED:
                 case CMD_EMERGENCY_MODE_CHANGED:
-                    boolean configWiFiDisableInECBM =
-                            mFacade.getConfigWiFiDisableInECBM(mContext);
-                    log("WifiController msg " + msg + " getConfigWiFiDisableInECBM "
-                            + configWiFiDisableInECBM);
-                    if ((msg.arg1 == 1) && configWiFiDisableInECBM) {
+                    if (msg.arg1 == 1) {
                         transitionTo(mEcmState);
                     }
                     break;
+                case CMD_AP_START_FAILURE:
+                    mWifiStateMachinePrime.stopSoftAPMode();
                 case CMD_AP_STOPPED:
                     log("SoftAp mode disabled, determine next state");
-                    if (mWifiApConfigStore.getDualSapStatus()) {
-                        mWifiApConfigStore.setDualSapStatus(false);
-                    }
                     if (mSettingsStore.isWifiToggleEnabled()) {
                         transitionTo(mDeviceActiveState);
                     } else if (checkScanOnlyModeAvailable()) {
                         transitionTo(mStaDisabledWithScanState);
                     }
                     // wifi should remain disabled, do not need to transition
-                    break;
-                case CMD_SET_DUAL_AP:
-                    // first make sure we aren't in airplane mode
-                    if (mSettingsStore.isAirplaneModeOn()) {
-                        log("drop softap requests when in airplane mode");
-                        break;
-                    }
-                    mWifiApConfigStore.setDualSapStatus(true);
-                    transitionTo(mStaDisabledState);
-                    break;
-                case CMD_AP_START_FAILURE:
-                    if (mWifiApConfigStore.getDualSapStatus()) {
-                        mWifiApConfigStore.setDualSapStatus(false);
-                    }
                     break;
                 default:
                     throw new RuntimeException("WifiController.handleMessage " + msg.what);
@@ -541,12 +525,10 @@ public class WifiController extends StateMachine {
                     }
                     return NOT_HANDLED;
                 case CMD_AP_START_FAILURE:
+                    mWifiStateMachinePrime.stopSoftAPMode();
                 case CMD_AP_STOPPED:
                     // already in a wifi mode, no need to check where we should go with softap
                     // stopped
-                    if (mWifiApConfigStore.getDualSapStatus()) {
-                        mWifiApConfigStore.setDualSapStatus(false);
-                    }
                     break;
                 case CMD_STA_STOPPED:
                     // Client mode stopped.  head to Disabled to wait for next command
@@ -615,12 +597,10 @@ public class WifiController extends StateMachine {
                     sendMessage((Message)(msg.obj));
                     break;
                 case CMD_AP_START_FAILURE:
+                    mWifiStateMachinePrime.stopSoftAPMode();
                 case CMD_AP_STOPPED:
                     // already in a wifi mode, no need to check where we should go with softap
                     // stopped
-                    if (mWifiApConfigStore.getDualSapStatus()) {
-                        mWifiApConfigStore.setDualSapStatus(false);
-                    }
                     break;
                 case CMD_SCANNING_STOPPED:
                     // stopped due to interface destruction - return to disabled and wait
@@ -676,8 +656,15 @@ public class WifiController extends StateMachine {
         private int mEcmEntryCount;
         @Override
         public void enter() {
-            mWifiStateMachinePrime.shutdownWifi();
-            mWifiStateMachine.clearANQPCache();
+            mWifiStateMachinePrime.stopSoftAPMode();
+            boolean configWiFiDisableInECBM =
+                    mFacade.getConfigWiFiDisableInECBM(mContext);
+            log("WifiController msg getConfigWiFiDisableInECBM "
+                    + configWiFiDisableInECBM);
+            if (configWiFiDisableInECBM) {
+                mWifiStateMachinePrime.shutdownWifi();
+                mWifiStateMachine.clearANQPCache();
+            }
             mEcmEntryCount = 1;
         }
 
@@ -715,7 +702,7 @@ public class WifiController extends StateMachine {
                     || msg.what == CMD_STA_STOPPED) {
                 // do not want to trigger a mode switch if we are in emergency mode
                 return HANDLED;
-            } else if (msg.what == CMD_SET_AP || msg.what == CMD_SET_DUAL_AP) {
+            } else if (msg.what == CMD_SET_AP) {
                 // do not want to start softap if we are in emergency mode
                 return HANDLED;
             } else {
