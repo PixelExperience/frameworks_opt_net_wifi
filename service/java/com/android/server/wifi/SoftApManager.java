@@ -92,7 +92,6 @@ public class SoftApManager implements ActiveModeManager {
     private int mReportedBandwidth = -1;
 
     private int mNumAssociatedStations = 0;
-    private int mQCNumAssociatedStations = 0;
     private boolean mTimeoutEnabled = false;
     private String[] mdualApInterfaces;
     private boolean expectedStop = false;
@@ -113,18 +112,6 @@ public class SoftApManager implements ActiveModeManager {
         public void onSoftApChannelSwitched(int frequency, int bandwidth) {
             mStateMachine.sendMessage(
                     SoftApStateMachine.CMD_SOFT_AP_CHANNEL_SWITCHED, frequency, bandwidth);
-        }
-
-        @Override
-        public void onStaConnected(String Macaddr) {
-            mStateMachine.sendMessage(
-                    SoftApStateMachine.CMD_CONNECTED_STATIONS, Macaddr);
-        }
-
-        @Override
-        public void onStaDisconnected(String Macaddr) {
-            mStateMachine.sendMessage(
-                    SoftApStateMachine.CMD_DISCONNECTED_STATIONS, Macaddr);
         }
     };
 
@@ -317,8 +304,6 @@ public class SoftApManager implements ActiveModeManager {
         public static final int CMD_INTERFACE_DESTROYED = 7;
         public static final int CMD_INTERFACE_DOWN = 8;
         public static final int CMD_SOFT_AP_CHANNEL_SWITCHED = 9;
-        public static final int CMD_CONNECTED_STATIONS = 10;
-        public static final int CMD_DISCONNECTED_STATIONS = 11;
 
         private final State mIdleState = new IdleState();
         private final State mStartedState = new StartedState();
@@ -585,42 +570,15 @@ public class SoftApManager implements ActiveModeManager {
                 }
                 mWifiMetrics.addSoftApNumAssociatedStationsChangedEvent(mNumAssociatedStations,
                         mMode);
-            }
 
-            /**
-             * Set New connected stations with this soft AP
-             * @param Macaddr Mac address of connected stations
-             */
-            private void setConnectedStations(String Macaddr) {
-
-                mQCNumAssociatedStations++;
-                if (mCallback != null) {
-                    mCallback.onStaConnected(Macaddr,mQCNumAssociatedStations);
-                } else {
-                    Log.e(TAG, "SoftApCallback is null. Dropping onStaConnected event.");
-                }
-                if (mQCNumAssociatedStations > 0)
-                    cancelTimeoutMessage();
-            }
-
-            /**
-             * Set Disconnected stations with this soft AP
-             * @param Macaddr Mac address of Disconnected stations
-             */
-            private void setDisConnectedStations(String Macaddr) {
-
-                if (mQCNumAssociatedStations > 0)
-                     mQCNumAssociatedStations--;
-                if (mCallback != null) {
-                    mCallback.onStaDisconnected(Macaddr, mQCNumAssociatedStations);
-                } else {
-                    Log.e(TAG, "SoftApCallback is null. Dropping onStaDisconnected event.");
-                }
-                if (mQCNumAssociatedStations == 0)
+                if (mNumAssociatedStations == 0) {
                     scheduleTimeoutMessage();
+                } else {
+                    cancelTimeoutMessage();
+                }
             }
 
-           private void onUpChanged(boolean isUp) {
+            private void onUpChanged(boolean isUp) {
                 if (isUp == mIfaceIsUp) {
                     return;  // no change
                 }
@@ -632,7 +590,6 @@ public class SoftApManager implements ActiveModeManager {
                     mWifiMetrics.incrementSoftApStartResult(true, 0);
                     if (mCallback != null) {
                         mCallback.onNumClientsChanged(mNumAssociatedStations);
-                        mCallback.onStaConnected("", mQCNumAssociatedStations);
                     }
                 } else {
                     // the interface was up, but goes down
@@ -661,7 +618,6 @@ public class SoftApManager implements ActiveModeManager {
 
                 Log.d(TAG, "Resetting num stations on start");
                 mNumAssociatedStations = 0;
-                mQCNumAssociatedStations = 0;
                 scheduleTimeoutMessage();
             }
 
@@ -675,7 +631,6 @@ public class SoftApManager implements ActiveModeManager {
                 }
                 Log.d(TAG, "Resetting num stations on stop");
                 mNumAssociatedStations = 0;
-                mQCNumAssociatedStations = 0;
                 cancelTimeoutMessage();
                 // Need this here since we are exiting |Started| state and won't handle any
                 // future CMD_INTERFACE_STATUS_CHANGED events after this point
@@ -732,22 +687,6 @@ public class SoftApManager implements ActiveModeManager {
                             mWifiMetrics.incrementNumSoftApUserBandPreferenceUnsatisfied();
                         }
                         break;
-                    case CMD_CONNECTED_STATIONS:
-                        if (message.obj == null) {
-                            Log.e(TAG, "Invalid Macaddr of connected station: " + message.obj);
-                            break;
-                        }
-                        Log.d(TAG, "Setting Macaddr of stations on CMD_CONNECTED_STATIONS");
-                        setConnectedStations((String) message.obj);
-                        break;
-                    case CMD_DISCONNECTED_STATIONS:
-                        if (message.obj == null) {
-                            Log.e(TAG, "Invalid Macaddr of disconnected station: " + message.obj);
-                            break;
-                        }
-                        Log.d(TAG, "Setting Macaddr of stations on CMD_DISCONNECTED_STATIONS");
-                        setDisConnectedStations((String) message.obj);
-                        break;
                     case CMD_TIMEOUT_TOGGLE_CHANGED:
                         boolean isEnabled = (message.arg1 == 1);
                         if (mTimeoutEnabled == isEnabled) {
@@ -757,7 +696,7 @@ public class SoftApManager implements ActiveModeManager {
                         if (!mTimeoutEnabled) {
                             cancelTimeoutMessage();
                         }
-                        if (mTimeoutEnabled && mQCNumAssociatedStations == 0) {
+                        if (mTimeoutEnabled && mNumAssociatedStations == 0) {
                             scheduleTimeoutMessage();
                         }
                         break;
