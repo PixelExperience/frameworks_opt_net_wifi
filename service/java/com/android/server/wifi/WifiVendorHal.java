@@ -89,6 +89,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import vendor.qti.hardware.wifi.V1_0.IWifiVendorStaIface;
+
 /**
  * Vendor HAL via HIDL
  */
@@ -2618,6 +2620,26 @@ public class WifiVendorHal {
     }
 
     /**
+     * Set Latency level configuration
+     */
+    public boolean setLatencyLevel(@NonNull String ifaceName, int level) {
+        synchronized (sLock) {
+            mLog.info("setLatencyLevel iface=% level=%").c(ifaceName).c(level).flush();
+            try {
+                vendor.qti.hardware.wifi.V1_0.IWifiVendorStaIface iface =
+                        getWifiVendorStaIfaceForV1_0Mockable(ifaceName);
+                if (iface == null) return boolResult(false);
+                WifiStatus status = iface.setLatencyLevel(level);
+                if (!ok(status)) return false;
+                return true;
+            } catch (RemoteException e) {
+                handleRemoteException(e);
+                return false;
+            }
+        }
+    }
+
+    /**
      * Method to mock out the V1_1 IWifiChip retrieval in unit tests.
      *
      * @return 1.1 IWifiChip object if the device is running the 1.1 wifi hal service, null
@@ -2654,6 +2676,20 @@ public class WifiVendorHal {
     }
 
     /**
+     * Method to mock out the V1_0 IWifiVendorStaIface retrieval.
+     *
+     * @param ifaceName Name of the interface
+     * @return 1.0 IWifiVendorStaIface object if the device is running the 1.0 wifi vendor hal
+     * service, null otherwise.
+     */
+    protected vendor.qti.hardware.wifi.V1_0.IWifiVendorStaIface
+            getWifiVendorStaIfaceForV1_0Mockable(@NonNull String ifaceName) {
+        IWifiStaIface iface = getStaIface(ifaceName);
+        if (iface == null) return null;
+        return vendor.qti.hardware.wifi.V1_0.IWifiVendorStaIface.castFrom(iface);
+    }
+
+    /**
      * sarPowerBackoffRequired_1_1()
      * This method checks if we need to backoff wifi Tx power due to SAR requirements.
      * It handles the case when the device is running the V1_1 version of WifiChip HAL
@@ -2664,7 +2700,7 @@ public class WifiVendorHal {
         /* As long as no voice call is active (in case voice call is supported),
          * no backoff is needed */
         if (sarInfo.sarVoiceCallSupported) {
-            return sarInfo.isVoiceCall;
+            return (sarInfo.isVoiceCall || sarInfo.isEarPieceActive);
         } else {
             return false;
         }
@@ -2679,7 +2715,7 @@ public class WifiVendorHal {
      * Otherwise, an exception is thrown.
      */
     private int frameworkToHalTxPowerScenario_1_1(SarInfo sarInfo) {
-        if (sarInfo.sarVoiceCallSupported && sarInfo.isVoiceCall) {
+        if (sarInfo.sarVoiceCallSupported && (sarInfo.isVoiceCall || sarInfo.isEarPieceActive)) {
             return android.hardware.wifi.V1_1.IWifiChip.TxPowerScenario.VOICE_CALL;
         } else {
             throw new IllegalArgumentException("bad scenario: voice call not active/supported");
@@ -2703,7 +2739,7 @@ public class WifiVendorHal {
         if (sarInfo.sarSapSupported && sarInfo.isWifiSapEnabled) {
             return true;
         }
-        if (sarInfo.sarVoiceCallSupported && sarInfo.isVoiceCall) {
+        if (sarInfo.sarVoiceCallSupported && (sarInfo.isVoiceCall || sarInfo.isEarPieceActive)) {
             return true;
         }
         return false;
@@ -2752,7 +2788,7 @@ public class WifiVendorHal {
                     throw new IllegalArgumentException("bad scenario: Invalid sensor state");
             }
         } else if (sarInfo.sarSapSupported && sarInfo.sarVoiceCallSupported) {
-            if (sarInfo.isVoiceCall) {
+            if (sarInfo.isVoiceCall || sarInfo.isEarPieceActive) {
                 return android.hardware.wifi.V1_2.IWifiChip
                         .TxPowerScenario.ON_HEAD_CELL_ON;
             } else if (sarInfo.isWifiSapEnabled) {
@@ -2763,7 +2799,7 @@ public class WifiVendorHal {
             }
         } else if (sarInfo.sarVoiceCallSupported) {
             /* SAR Sensors and SoftAP not supported, act like V1_1 */
-            if (sarInfo.isVoiceCall) {
+            if (sarInfo.isVoiceCall || sarInfo.isEarPieceActive) {
                 return android.hardware.wifi.V1_1.IWifiChip.TxPowerScenario.VOICE_CALL;
             } else {
                 throw new IllegalArgumentException("bad scenario: voice call not active");
@@ -3223,22 +3259,24 @@ public class WifiVendorHal {
     public class HalDeviceManagerStatusListener implements HalDeviceManager.ManagerStatusListener {
         @Override
         public void onStatusChanged() {
-            boolean isReady = mHalDeviceManager.isReady();
-            boolean isStarted = mHalDeviceManager.isStarted();
+            mHalEventHandler.post(() -> {
+                boolean isReady = mHalDeviceManager.isReady();
+                boolean isStarted = mHalDeviceManager.isStarted();
 
-            mVerboseLog.i("Device Manager onStatusChanged. isReady(): " + isReady
-                    + ", isStarted(): " + isStarted);
-            if (!isReady) {
-                // Probably something unpleasant, e.g. the server died
-                WifiNative.VendorHalDeathEventHandler handler;
-                synchronized (sLock) {
-                    clearState();
-                    handler = mDeathEventHandler;
+                mVerboseLog.i("Device Manager onStatusChanged. isReady(): " + isReady
+                        + ", isStarted(): " + isStarted);
+                if (!isReady) {
+                    // Probably something unpleasant, e.g. the server died
+                    WifiNative.VendorHalDeathEventHandler handler;
+                    synchronized (sLock) {
+                        clearState();
+                        handler = mDeathEventHandler;
+                    }
+                    if (handler != null) {
+                        handler.onDeath();
+                    }
                 }
-                if (handler != null) {
-                    handler.onDeath();
-                }
-            }
+            });
         }
     }
 }

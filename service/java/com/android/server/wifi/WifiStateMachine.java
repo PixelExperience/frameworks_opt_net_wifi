@@ -1888,6 +1888,11 @@ public class WifiStateMachine extends StateMachine {
         }
     }
 
+    // set Latency level
+    public boolean setLatencyLevel(int level) {
+       return mWifiNative.setLatencyLevel(mInterfaceName, level);
+    }
+
     /**
      * Enable TDLS for a specific MAC address
      */
@@ -2495,6 +2500,8 @@ public class WifiStateMachine extends StateMachine {
         if (mWifiConnectivityManager != null) {
             mWifiConnectivityManager.handleScreenStateChanged(screenOn);
         }
+
+        mSarManager.handleScreenStateChanged(screenOn);
 
         if (mVerboseLoggingEnabled) log("handleScreenStateChanged Exit: " + screenOn);
     }
