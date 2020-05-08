@@ -243,7 +243,7 @@ public class WifiMetricsTest extends WifiBaseTest {
         mDecodedProto = WifiMetricsProto.WifiLog.parseFrom(protoBytes);
     }
 
-    /**
+    /*, LOCAL_GEN, DEAUTH_REASON*
      * Gets the 'clean dump' proto bytes from mWifiMetrics & deserializes it into
      * mDecodedProto
      */
@@ -2168,8 +2168,8 @@ public class WifiMetricsTest extends WifiBaseTest {
 
     private static final int DEAUTH_REASON = 7;
     private static final int ASSOC_STATUS = 11;
-    private static final int ASSOC_TIMEOUT = 1;
-    private static final int LOCAL_GEN = 1;
+    private static final boolean ASSOC_TIMEOUT = true;
+    private static final boolean LOCAL_GEN = true;
     private static final int AUTH_FAILURE_REASON = WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD;
     private static final int NUM_TEST_STA_EVENTS = 19;
     private static final String   sSSID = "\"SomeTestSsid\"";
@@ -2188,10 +2188,10 @@ public class WifiMetricsTest extends WifiBaseTest {
     private final WifiConfiguration mTestWifiConfig = createComplexWifiConfig();
     // <msg.what> <msg.arg1> <msg.arg2>
     private int[][] mTestStaMessageInts = {
-        {WifiMonitor.ASSOCIATION_REJECTION_EVENT,   ASSOC_TIMEOUT,       ASSOC_STATUS},
+        {WifiMonitor.ASSOCIATION_REJECTION_EVENT,   0,                   0},
         {WifiMonitor.AUTHENTICATION_FAILURE_EVENT,  AUTH_FAILURE_REASON, -1},
         {WifiMonitor.NETWORK_CONNECTION_EVENT,      0,                   0},
-        {WifiMonitor.NETWORK_DISCONNECTION_EVENT,   LOCAL_GEN,           DEAUTH_REASON},
+        {WifiMonitor.NETWORK_DISCONNECTION_EVENT,   0,                   0},
         {WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0,                   0},
         {WifiMonitor.ASSOCIATED_BSSID_EVENT,        0,                   0},
         {WifiMonitor.TARGET_BSSID_EVENT,            0,                   0},
@@ -2199,10 +2199,10 @@ public class WifiMetricsTest extends WifiBaseTest {
         {WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0,                   0}
     };
     private Object[] mTestStaMessageObjs = {
+        new AssocRejectEventInfo(sSSID, sBSSID, ASSOC_STATUS, ASSOC_TIMEOUT),
         null,
         null,
-        null,
-        null,
+        new DisconnectEventInfo(sSSID, sBSSID, DEAUTH_REASON, LOCAL_GEN),
         mStateDisconnected,
         null,
         null,
@@ -2231,12 +2231,12 @@ public class WifiMetricsTest extends WifiBaseTest {
     // <auth_fail_reason>, <assoc_timed_out> <supplicantStateChangeBitmask> <1|0>(has ConfigInfo)
     private int[][] mExpectedValues = {
         {StaEvent.TYPE_ASSOCIATION_REJECTION_EVENT,     -1,  ASSOC_STATUS,         0,
-            /**/                               0, ASSOC_TIMEOUT,        0, 0},    /**/
+            /**/                               0, ASSOC_TIMEOUT ? 1 : 0,        0, 0},    /**/
         {StaEvent.TYPE_AUTHENTICATION_FAILURE_EVENT,    -1,            -1,         0,
             /**/StaEvent.AUTH_FAILURE_WRONG_PSWD,             0,        0, 0},    /**/
         {StaEvent.TYPE_NETWORK_CONNECTION_EVENT,        -1,            -1,         0,
             /**/                               0,             0,        0, 0},    /**/
-        {StaEvent.TYPE_NETWORK_DISCONNECTION_EVENT, DEAUTH_REASON,     -1, LOCAL_GEN,
+        {StaEvent.TYPE_NETWORK_DISCONNECTION_EVENT, DEAUTH_REASON,     -1, LOCAL_GEN ? 1 : 0,
             /**/                               0,             0,        0, 0},    /**/
         {StaEvent.TYPE_CMD_ASSOCIATED_BSSID,            -1,            -1,         0,
             /**/                               0,             0,  mSupBm1, 0},    /**/
@@ -4177,6 +4177,9 @@ public class WifiMetricsTest extends WifiBaseTest {
                 add(60);
             }});
 
+        mWifiMetrics.addNetworkSuggestionUserApprovalAppUiReaction(1,  true);
+        mWifiMetrics.addNetworkSuggestionUserApprovalAppUiReaction(2,  false);
+
         dumpProtoAndDeserialize();
 
         assertEquals(4, mDecodedProto.wifiNetworkSuggestionApiLog.numModification);
@@ -4202,6 +4205,21 @@ public class WifiMetricsTest extends WifiBaseTest {
         assertEquals(WifiMetricsProto.WifiNetworkSuggestionApiLog.TYPE_NON_PRIVILEGED,
                 mDecodedProto.wifiNetworkSuggestionApiLog.appCountPerType[2].appType);
         assertEquals(3, mDecodedProto.wifiNetworkSuggestionApiLog.appCountPerType[2].count);
+
+        assertEquals(2,
+                mDecodedProto.wifiNetworkSuggestionApiLog.userApprovalAppUiReaction.length);
+        assertEquals(WifiMetricsProto.WifiNetworkSuggestionApiLog.ACTION_ALLOWED,
+                mDecodedProto.wifiNetworkSuggestionApiLog.userApprovalAppUiReaction[0]
+                        .userAction);
+        assertEquals(true,
+                mDecodedProto.wifiNetworkSuggestionApiLog.userApprovalAppUiReaction[0]
+                        .isDialog);
+        assertEquals(WifiMetricsProto.WifiNetworkSuggestionApiLog.ACTION_DISALLOWED,
+                mDecodedProto.wifiNetworkSuggestionApiLog.userApprovalAppUiReaction[1]
+                        .userAction);
+        assertEquals(false,
+                mDecodedProto.wifiNetworkSuggestionApiLog.userApprovalAppUiReaction[1]
+                        .isDialog);
     }
 
     private NetworkSelectionExperimentDecisions findUniqueNetworkSelectionExperimentDecisions(
