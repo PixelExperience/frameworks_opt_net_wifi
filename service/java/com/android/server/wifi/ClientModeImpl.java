@@ -78,7 +78,6 @@ import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiEnterpriseConfig;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
-import android.net.wifi.WifiManager.DeviceMobilityState;
 import android.net.wifi.WifiNetworkAgentSpecifier;
 import android.net.wifi.WifiScanner;
 import android.net.wifi.hotspot2.IProvisioningCallback;
@@ -159,7 +158,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * and all changes in connectivity state are initiated here.
  */
 public class ClientModeImpl extends StateMachine {
-
     private static final String NETWORKTYPE = "WIFI";
     @VisibleForTesting public static final short NUM_LOG_RECS_NORMAL = 100;
     @VisibleForTesting public static final short NUM_LOG_RECS_VERBOSE_LOW_MEMORY = 200;
@@ -167,21 +165,14 @@ public class ClientModeImpl extends StateMachine {
 
     private static final String TAG = "WifiClientModeImpl";
 
-    private static final int ONE_HOUR_MILLI = 1000 * 60 * 60;
-
-    private static final String GOOGLE_OUI = "DA-A1-19";
-
     private static final String EXTRA_OSU_ICON_QUERY_BSSID = "BSSID";
     private static final String EXTRA_OSU_ICON_QUERY_FILENAME = "FILENAME";
     private static final String EXTRA_OSU_PROVIDER = "OsuProvider";
-    private static final String EXTRA_UID = "uid";
-    private static final String EXTRA_PACKAGE_NAME = "PackageName";
-    private static final String EXTRA_PASSPOINT_CONFIGURATION = "PasspointConfiguration";
     private static final int IPCLIENT_STARTUP_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes!
     private static final int IPCLIENT_SHUTDOWN_TIMEOUT_MS = 60_000; // 60 seconds
+    @VisibleForTesting public static final long CONNECTING_WATCHDOG_TIMEOUT_MS = 30_000; // 30 secs.
 
     private boolean mVerboseLoggingEnabled = false;
-    private final WifiPermissionsWrapper mWifiPermissionsWrapper;
 
     /* debug flag, indicating if handling of ASSOCIATION_REJECT ended up blacklisting
      * the corresponding BSSID.
@@ -517,7 +508,7 @@ public class ClientModeImpl extends StateMachine {
     static final int CMD_SCREEN_STATE_CHANGED                           = BASE + 95;
 
     /* Disconnecting state watchdog */
-    static final int CMD_DISCONNECTING_WATCHDOG_TIMER                   = BASE + 96;
+    static final int CMD_CONNECTING_WATCHDOG_TIMER                      = BASE + 96;
 
     /* SIM is removed; reset any cached data for it */
     static final int CMD_RESET_SIM_NETWORKS                             = BASE + 101;
@@ -540,8 +531,8 @@ public class ClientModeImpl extends StateMachine {
     /* Reset the supplicant state tracker */
     static final int CMD_RESET_SUPPLICANT_STATE                         = BASE + 111;
 
-    int mDisconnectingWatchdogCount = 0;
-    static final int DISCONNECTING_GUARD_TIMER_MSEC = 5000;
+    /** Connecting watchdog timeout counter */
+    private int mConnectingWatchdogCount = 0;
 
     /**
      * Indicates the end of boot process, should be used to trigger load from config store,
@@ -699,8 +690,6 @@ public class ClientModeImpl extends StateMachine {
     private State mL3ConnectedState = new L3ConnectedState();
     /* Roaming */
     private State mRoamingState = new RoamingState();
-    /* disconnect issued, waiting for network disconnect confirmation */
-    private State mDisconnectingState = new DisconnectingState();
     /* Network is not connected, supplicant assoc+auth is not complete */
     private State mDisconnectedState = new DisconnectedState();
 
@@ -815,7 +804,6 @@ public class ClientModeImpl extends StateMachine {
 
         mWifiMonitor = wifiMonitor;
         mWifiDiagnostics = wifiDiagnostics;
-        mWifiPermissionsWrapper = wifiPermissionsWrapper;
         mWifiDataStall = wifiDataStall;
         mThroughputPredictor = throughputPredictor;
         mDeviceConfigFacade = deviceConfigFacade;
@@ -894,7 +882,6 @@ public class ClientModeImpl extends StateMachine {
                         addState(mL3ProvisioningState, mL2ConnectedState);
                         addState(mL3ConnectedState, mL2ConnectedState);
                         addState(mRoamingState, mL2ConnectedState);
-                addState(mDisconnectingState, mConnectableState);
                 addState(mDisconnectedState, mConnectableState);
         // CHECKSTYLE:ON IndentationCheck
 
@@ -2179,12 +2166,12 @@ public class ClientModeImpl extends StateMachine {
                 sb.append(Integer.toString(msg.arg2));
                 sb.append(" cur=").append(mRoamWatchdogCount);
                 break;
-            case CMD_DISCONNECTING_WATCHDOG_TIMER:
+            case CMD_CONNECTING_WATCHDOG_TIMER:
                 sb.append(" ");
                 sb.append(Integer.toString(msg.arg1));
                 sb.append(" ");
                 sb.append(Integer.toString(msg.arg2));
-                sb.append(" cur=").append(mDisconnectingWatchdogCount);
+                sb.append(" cur=").append(mConnectingWatchdogCount);
                 break;
             case CMD_START_RSSI_MONITORING_OFFLOAD:
             case CMD_STOP_RSSI_MONITORING_OFFLOAD:
@@ -3430,7 +3417,7 @@ public class ClientModeImpl extends StateMachine {
                 case CMD_START_ROAM:
                 case WifiMonitor.ASSOCIATED_BSSID_EVENT:
                 case CMD_UNWANTED_NETWORK:
-                case CMD_DISCONNECTING_WATCHDOG_TIMER:
+                case CMD_CONNECTING_WATCHDOG_TIMER:
                 case CMD_ROAM_WATCHDOG_TIMER:
                 case CMD_SET_OPERATIONAL_MODE: {
                     // using the CMD_SET_OPERATIONAL_MODE (sent at front of queue) to trigger the
@@ -4563,7 +4550,6 @@ public class ClientModeImpl extends StateMachine {
                     mWifiMetrics.logStaEvent(StaEvent.TYPE_FRAMEWORK_DISCONNECT,
                             StaEvent.DISCONNECT_GENERIC);
                     mWifiNative.disconnect(mInterfaceName);
-                    transitionTo(mDisconnectingState);
                     break;
                 }
                 case CMD_PRE_DHCP_ACTION:
@@ -4591,6 +4577,14 @@ public class ClientModeImpl extends StateMachine {
         @Override
         public void enter() {
             if (mVerboseLoggingEnabled) Log.v(TAG, "Entering L2ConnectingState");
+            // Make sure we connect: we enter this state prior to connecting to a new
+            // network. In some cases supplicant ignores the connect requests (it might not
+            // find the target SSID in its cache), Therefore we end up stuck that state, hence the
+            // need for the watchdog.
+            mConnectingWatchdogCount++;
+            logd("Start Connecting Watchdog " + mConnectingWatchdogCount);
+            sendMessageDelayed(obtainMessage(CMD_CONNECTING_WATCHDOG_TIMER,
+                    mConnectingWatchdogCount, 0), CONNECTING_WATCHDOG_TIMEOUT_MS);
         }
 
         @Override
@@ -4811,6 +4805,14 @@ public class ClientModeImpl extends StateMachine {
                     }
                     break;
                 }
+                case CMD_CONNECTING_WATCHDOG_TIMER: {
+                    if (mConnectingWatchdogCount == message.arg1) {
+                        if (mVerboseLoggingEnabled) log("Connecting watchdog! -> disconnect");
+                        handleNetworkDisconnect(false);
+                        transitionTo(mDisconnectedState);
+                    }
+                    break;
+                }
                 default: {
                     handleStatus = NOT_HANDLED;
                     break;
@@ -4942,9 +4944,6 @@ public class ClientModeImpl extends StateMachine {
                     // CMD_IPV4_PROVISIONING_SUCCESS message, which calls handleIPv4Success(),
                     // which calls updateLinkProperties, which then sends
                     // CMD_IP_CONFIGURATION_SUCCESSFUL.
-                    //
-                    // In the event of failure, we transition to mDisconnectingState
-                    // similarly--via messages sent back from IpClient.
                     break;
                 }
                 case CMD_IPV4_PROVISIONING_SUCCESS: {
@@ -4968,7 +4967,6 @@ public class ClientModeImpl extends StateMachine {
                                 WifiMetricsProto.ConnectionEvent.HLF_NONE,
                                 WifiMetricsProto.ConnectionEvent.FAILURE_REASON_UNKNOWN);
                         mWifiNative.disconnect(mInterfaceName);
-                        transitionTo(mDisconnectingState);
                     } else {
                         handleSuccessfulIpConfiguration();
                         sendConnectedState();
@@ -4988,7 +4986,6 @@ public class ClientModeImpl extends StateMachine {
                             getTargetSsid(),
                             (mLastBssid == null) ? mTargetBssid : mLastBssid,
                             WifiLastResortWatchdog.FAILURE_CODE_DHCP);
-                    transitionTo(mDisconnectingState);
                     break;
                 }
                 case CMD_IP_REACHABILITY_LOST: {
@@ -5001,7 +4998,6 @@ public class ClientModeImpl extends StateMachine {
                             WifiUsabilityStats.TYPE_IP_REACHABILITY_LOST, -1);
                     if (mIpReachabilityDisconnectEnabled) {
                         handleIpReachabilityLost();
-                        transitionTo(mDisconnectingState);
                     } else {
                         logd("CMD_IP_REACHABILITY_LOST but disconnect disabled -- ignore");
                     }
@@ -5013,7 +5009,6 @@ public class ClientModeImpl extends StateMachine {
                                 StaEvent.DISCONNECT_P2P_DISCONNECT_WIFI_REQUEST);
                         mWifiNative.disconnect(mInterfaceName);
                         mTemporarilyDisconnectWifi = true;
-                        transitionTo(mDisconnectingState);
                     }
                     break;
                 }
@@ -5146,7 +5141,6 @@ public class ClientModeImpl extends StateMachine {
                             mWifiNative.removeAllNetworks(mInterfaceName);
                             mSimRequiredNotifier.showSimRequiredNotification(
                                     config, mLastSimBasedConnectionCarrierName);
-                            transitionTo(mDisconnectingState);
                         }
                     }
                     /* allow parent state to reset data for other networks */
@@ -5418,9 +5412,8 @@ public class ClientModeImpl extends StateMachine {
                         // We must clear the config BSSID, as the wifi chipset may decide to roam
                         // from this point on and having the BSSID specified by QNS would cause
                         // the roam to fail and the device to disconnect.
-                        // When transition from RoamingState to DisconnectingState or
-                        // DisconnectedState, the config BSSID is cleared by
-                        // handleNetworkDisconnect().
+                        // When transition from RoamingState to DisconnectedState, the config BSSID
+                        // is cleared by handleNetworkDisconnect().
                         clearTargetBssid("RoamingCompleted");
 
                         // We used to transition to L3ProvisioningState in an
@@ -5513,7 +5506,6 @@ public class ClientModeImpl extends StateMachine {
                         mWifiMetrics.logStaEvent(StaEvent.TYPE_FRAMEWORK_DISCONNECT,
                                 StaEvent.DISCONNECT_UNWANTED);
                         mWifiNative.disconnect(mInterfaceName);
-                        transitionTo(mDisconnectingState);
                     } else if (message.arg1 == NETWORK_STATUS_UNWANTED_DISABLE_AUTOJOIN
                             || message.arg1 == NETWORK_STATUS_UNWANTED_VALIDATION_FAILED) {
                         Log.d(TAG, (message.arg1 == NETWORK_STATUS_UNWANTED_DISABLE_AUTOJOIN
@@ -5692,86 +5684,6 @@ public class ClientModeImpl extends StateMachine {
                      WifiConnectivityManager.WIFI_STATE_TRANSITIONING);
 
             mWifiLastResortWatchdog.connectedStateTransition(false);
-        }
-    }
-
-    class DisconnectingState extends State {
-
-        @Override
-        public void enter() {
-
-            if (mVerboseLoggingEnabled) {
-                logd(" Enter DisconnectingState State screenOn=" + mScreenOn);
-            }
-
-            // Make sure we disconnect: we enter this state prior to connecting to a new
-            // network, waiting for either a DISCONNECT event or a SUPPLICANT_STATE_CHANGE
-            // event which in this case will be indicating that supplicant started to associate.
-            // In some cases supplicant doesn't ignore the connect requests (it might not
-            // find the target SSID in its cache),
-            // Therefore we end up stuck that state, hence the need for the watchdog.
-            mDisconnectingWatchdogCount++;
-            logd("Start Disconnecting Watchdog " + mDisconnectingWatchdogCount);
-            sendMessageDelayed(obtainMessage(CMD_DISCONNECTING_WATCHDOG_TIMER,
-                    mDisconnectingWatchdogCount, 0), DISCONNECTING_GUARD_TIMER_MSEC);
-        }
-
-        @Override
-        public boolean processMessage(Message message) {
-            boolean handleStatus = HANDLED;
-
-            switch (message.what) {
-                case CMD_CONNECT_NETWORK:
-                case CMD_SAVE_NETWORK: {
-                    mMessageHandlingStatus = MESSAGE_HANDLING_STATUS_DEFERRED;
-                    deferMessage(message);
-                    break;
-                }
-                case CMD_DISCONNECT: {
-                    if (mVerboseLoggingEnabled) {
-                        log("Ignore CMD_DISCONNECT when already disconnecting.");
-                    }
-                    break;
-                }
-                case CMD_DISCONNECTING_WATCHDOG_TIMER: {
-                    if (mDisconnectingWatchdogCount == message.arg1) {
-                        if (mVerboseLoggingEnabled) log("disconnecting watchdog! -> disconnect");
-                        handleNetworkDisconnect(false);
-                        transitionTo(mDisconnectedState);
-                    }
-                    break;
-                }
-                case WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT: {
-                    StateChangeResult stateChangeResult = (StateChangeResult) message.obj;
-                    SupplicantState state = handleSupplicantStateChange(stateChangeResult);
-                    if (state == SupplicantState.DISCONNECTED) {
-                        if (mVerboseLoggingEnabled) {
-                            log("Missed CTRL-EVENT-DISCONNECTED, disconnect");
-                        }
-                        handleNetworkDisconnect(false);
-                        transitionTo(mDisconnectedState);
-                    }
-                    break;
-                }
-                case WifiMonitor.NETWORK_DISCONNECTION_EVENT: {
-                    DisconnectEventInfo eventInfo = (DisconnectEventInfo) message.obj;
-                    if (mVerboseLoggingEnabled) {
-                        log("DisconnectingState: Network disconnection " + eventInfo);
-                    }
-                    handleNetworkDisconnect(false);
-                    transitionTo(mDisconnectedState);
-                    break;
-                }
-                default: {
-                    handleStatus = NOT_HANDLED;
-                    break;
-                }
-            }
-
-            if (handleStatus == HANDLED) {
-                logStateAndMessage(message, this);
-            }
-            return handleStatus;
         }
     }
 
@@ -6153,26 +6065,6 @@ public class ClientModeImpl extends StateMachine {
             return mWifiNative.getMacAddress(mInterfaceName);
         }
         return null;
-    }
-
-    /**
-     * Sets the current device mobility state.
-     * @param state the new device mobility state
-     */
-    public void setDeviceMobilityState(@DeviceMobilityState int state) {
-        mWifiConnectivityManager.setDeviceMobilityState(state);
-        mWifiHealthMonitor.setDeviceMobilityState(state);
-        mWifiDataStall.setDeviceMobilityState(state);
-    }
-
-    /**
-     * Updates the Wi-Fi usability score.
-     * @param seqNum Sequence number of the Wi-Fi usability score.
-     * @param score The Wi-Fi usability score.
-     * @param predictionHorizonSec Prediction horizon of the Wi-Fi usability score.
-     */
-    public void updateWifiUsabilityScore(int seqNum, int score, int predictionHorizonSec) {
-        mWifiMetrics.incrementWifiUsabilityScoreCount(seqNum, score, predictionHorizonSec);
     }
 
     /**
