@@ -1519,7 +1519,46 @@ public class ClientModeImplTest extends WifiBaseTest {
         mLooper.dispatchAll();
 
         verify(mWifiConnectivityManager).prepareForForcedConnection(TEST_NETWORK_ID);
+    }
 
+    /**
+     * If there is a network removal while still connecting to it, the connection
+     * should be aborted.
+     */
+    @Test
+    public void networkRemovalWhileObtainingIp() throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+
+        verify(mWifiNative).removeAllNetworks(WIFI_IFACE_NAME);
+
+        startConnectSuccess();
+
+        mCmi.sendMessage(WifiMonitor.NETWORK_CONNECTION_EVENT, 0, 0, sBSSID);
+        mLooper.dispatchAll();
+
+        mCmi.sendMessage(WifiMonitor.SUPPLICANT_STATE_CHANGE_EVENT, 0, 0,
+                new StateChangeResult(0, sWifiSsid, sBSSID, SupplicantState.COMPLETED));
+        mLooper.dispatchAll();
+
+        assertEquals("L3ProvisioningState", getCurrentState().getName());
+        reset(mWifiNative);
+
+        // Simulate the target network removal & the disconnect trigger.
+        WifiConfiguration removedNetwork = new WifiConfiguration();
+        removedNetwork.networkId = FRAMEWORK_NETWORK_ID;
+        mConfigUpdateListenerCaptor.getValue().onNetworkRemoved(removedNetwork);
+        mLooper.dispatchAll();
+
+        verify(mWifiNative).removeNetworkCachedData(FRAMEWORK_NETWORK_ID);
+        verify(mWifiNative).disconnect(WIFI_IFACE_NAME);
+
+        when(mWifiConfigManager.getConfiguredNetwork(FRAMEWORK_NETWORK_ID)).thenReturn(null);
+        DisconnectEventInfo disconnectEventInfo =
+                new DisconnectEventInfo(sSSID, sBSSID, 0, false);
+        mCmi.sendMessage(WifiMonitor.NETWORK_DISCONNECTION_EVENT, disconnectEventInfo);
+        mLooper.dispatchAll();
+
+        assertEquals("DisconnectedState", getCurrentState().getName());
     }
 
     /**
@@ -1635,6 +1674,33 @@ public class ClientModeImplTest extends WifiBaseTest {
         verify(mWifiConfigManager).updateNetworkSelectionStatus(anyInt(),
                 eq(WifiConfiguration.NetworkSelectionStatus.DISABLED_AUTHENTICATION_FAILURE));
 
+        assertEquals("DisconnectedState", getCurrentState().getName());
+    }
+
+    /**
+     * It is observed sometimes the WifiMonitor.NETWORK_DISCONNECTION_EVENT is observed before the
+     * actual connection failure messages while making a connection.
+     * The test make sure that make sure that the connection event is ended properly in the above
+     * case.
+     */
+    @Test
+    public void testDisconnectionEventInL2ConnectingStateEndsConnectionEvent() throws Exception {
+        initializeAndAddNetworkAndVerifySuccess();
+
+        startConnectSuccess();
+
+        WifiConfiguration config = createTestNetwork(false);
+        config.getNetworkSelectionStatus().setHasEverConnected(true);
+        when(mWifiConfigManager.getConfiguredNetwork(anyInt())).thenReturn(config);
+
+        DisconnectEventInfo disconnectEventInfo =
+                new DisconnectEventInfo(sSSID, sBSSID, 0, false);
+        mCmi.sendMessage(WifiMonitor.NETWORK_DISCONNECTION_EVENT, disconnectEventInfo);
+        mLooper.dispatchAll();
+
+        verify(mWifiMetrics).endConnectionEvent(
+                eq(WifiMetrics.ConnectionEvent.FAILURE_NETWORK_DISCONNECTION), anyInt(), anyInt());
+        verify(mWifiConnectivityManager).handleConnectionAttemptEnded(anyInt(), any(), any());
         assertEquals("DisconnectedState", getCurrentState().getName());
     }
 
