@@ -189,6 +189,8 @@ public class WifiInjector {
     private final UntrustedWifiNetworkFactory mUntrustedWifiNetworkFactory;
     private final SupplicantStateTracker mSupplicantStateTracker;
 
+    private final WifiP2pConnection mWifiP2pConnection;
+
     public WifiInjector(WifiContext context) {
         if (context == null) {
             throw new IllegalStateException(
@@ -371,6 +373,7 @@ public class WifiInjector {
         mActiveModeWarden = new ActiveModeWarden(this, wifiLooper,
                 mWifiNative, new DefaultClientModeManager(), mBatteryStats, mWifiDiagnostics,
                 mContext, mSettingsStore, mFrameworkFacade, mWifiPermissionsUtil);
+        mWifiP2pConnection = new WifiP2pConnection(mContext, wifiLooper, mActiveModeWarden);
         mConnectHelper = new ConnectHelper(mActiveModeWarden, mWifiConfigManager);
         mOpenNetworkNotifier = new OpenNetworkNotifier(mContext,
                 wifiLooper, mFrameworkFacade, mClock, mWifiMetrics,
@@ -456,6 +459,23 @@ public class WifiInjector {
         LogcatLog.enableVerboseLogging(verbose);
         mDppManager.enableVerboseLogging(verbose);
         mWifiCarrierInfoManager.enableVerboseLogging(verbose);
+
+        boolean verboseBool = verbose > 0;
+        mCountryCode.enableVerboseLogging(verboseBool);
+        mWifiDiagnostics.enableVerboseLogging(verboseBool);
+        mWifiMonitor.enableVerboseLogging(verboseBool);
+        mWifiNative.enableVerboseLogging(verboseBool);
+        mWifiConfigManager.enableVerboseLogging(verboseBool);
+        mSupplicantStateTracker.enableVerboseLogging(verboseBool);
+        mPasspointManager.enableVerboseLogging(verboseBool);
+        mWifiNetworkFactory.enableVerboseLogging(verboseBool);
+        mLinkProbeManager.enableVerboseLogging(verboseBool);
+        mMboOceController.enableVerboseLogging(verboseBool);
+        mWifiScoreCard.enableVerboseLogging(verboseBool);
+        mWifiHealthMonitor.enableVerboseLogging(verboseBool);
+        mThroughputPredictor.enableVerboseLogging(verboseBool);
+        mWifiDataStall.enableVerboseLogging(verboseBool);
+        mWifiConnectivityManager.enableVerboseLogging(verboseBool);
     }
 
     public UserManager getUserManager() {
@@ -594,7 +614,7 @@ public class WifiInjector {
      * @param listener listener for ClientModeManager state changes
      * @return a new instance of ClientModeManager
      */
-    public ClientModeManager makeClientModeManager(ClientModeManager.Listener listener) {
+    public ConcreteClientModeManager makeClientModeManager(ClientModeManager.Listener listener) {
         ClientModeImpl clientModeImpl = new ClientModeImpl(mContext, mWifiMetrics, mClock,
                 mWifiScoreCard, mWifiStateTracker, mWifiPermissionsUtil, mWifiConfigManager,
                 mPasspointManager, mWifiMonitor, mWifiDiagnostics, mWifiPermissionsWrapper,
@@ -611,7 +631,8 @@ public class WifiInjector {
                 new EapFailureNotifier(mContext, mFrameworkFacade, mWifiCarrierInfoManager),
                 new SimRequiredNotifier(mContext, mFrameworkFacade),
                 new WifiScoreReport(mScoringParams, mClock, mWifiMetrics, mWifiInfo, mWifiNative,
-                        mBssidBlocklistMonitor, mWifiThreadRunner, mWifiDataStall));
+                        mBssidBlocklistMonitor, mWifiThreadRunner, mWifiDataStall),
+                mWifiP2pConnection);
         return new ConcreteClientModeManager(mContext, mWifiHandlerThread.getLooper(), mClock,
                 mWifiNative, listener, mWifiMetrics, mWakeupController,
                 clientModeImpl);
@@ -824,5 +845,9 @@ public class WifiInjector {
 
     public BaseWifiDiagnostics getWifiDiagnostics() {
         return mWifiDiagnostics;
+    }
+
+    public WifiP2pConnection getWifiP2pConnection() {
+        return mWifiP2pConnection;
     }
 }
