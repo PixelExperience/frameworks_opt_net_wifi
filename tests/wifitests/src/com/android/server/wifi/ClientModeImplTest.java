@@ -454,7 +454,7 @@ public class ClientModeImplTest extends WifiBaseTest {
 
         /** uncomment this to enable logs from ClientModeImpls */
         // enableDebugLogs();
-        mWifiMonitor = new MockWifiMonitor();
+        mWifiMonitor = spy(new MockWifiMonitor());
         when(mTelephonyManager.createForSubscriptionId(anyInt())).thenReturn(mDataTelephonyManager);
         when(mWifiNetworkFactory.getSpecificNetworkRequestUidAndPackageName(any()))
                 .thenReturn(Pair.create(Process.INVALID_UID, ""));
@@ -880,7 +880,6 @@ public class ClientModeImplTest extends WifiBaseTest {
         mLooper.dispatchAll();
 
         verify(mSimRequiredNotifier, never()).showSimRequiredNotification(any(), any());
-
         assertEquals("L3ProvisioningState", getCurrentState().getName());
     }
 
@@ -898,6 +897,23 @@ public class ClientModeImplTest extends WifiBaseTest {
 
         verify(mSimRequiredNotifier).showSimRequiredNotification(any(), any());
         verify(mWifiNative, times(2)).removeAllNetworks(WIFI_IFACE_NAME);
+    }
+
+    /**
+     * When the SIM card was removed, if the current wifi connection is using it, the connection
+     * should be disconnected, otherwise, the connection shouldn't be impacted.
+     */
+    @Test
+    public void testResetSimWhenConnectedSimRemovedAfterNetworkRemoval() throws Exception {
+        setupEapSimConnection();
+        doReturn(false).when(mWifiCarrierInfoManager).isSimPresent(eq(DATA_SUBID));
+        when(mWifiConfigManager.getConfiguredNetwork(anyInt())).thenReturn(null);
+        mCmi.sendMessage(ClientModeImpl.CMD_RESET_SIM_NETWORKS,
+                ClientModeImpl.RESET_SIM_REASON_SIM_REMOVED);
+        mLooper.dispatchAll();
+
+        verify(mSimRequiredNotifier, never()).showSimRequiredNotification(any(), any());
+        assertEquals("L3ProvisioningState", getCurrentState().getName());
     }
 
     /**
@@ -3915,6 +3931,24 @@ public class ClientModeImplTest extends WifiBaseTest {
         mLooper.dispatchAll();
         verify(mMboOceController).disable();
         verify(mWifiDataStall).disablePhoneStateListener();
+    }
+
+    @Test
+    public void verifyWifiMonitorHandlersDeregisteredOnStop() throws Exception {
+        verify(mWifiMonitor, atLeastOnce())
+                .registerHandler(eq(WIFI_IFACE_NAME), anyInt(), any());
+        verify(mWifiMetrics).registerForWifiMonitorEvents(WIFI_IFACE_NAME);
+        verify(mWifiLastResortWatchdog).registerForWifiMonitorEvents(WIFI_IFACE_NAME);
+        verify(mSupplicantStateTracker).registerForWifiMonitorEvents(WIFI_IFACE_NAME);
+
+        mCmi.stop();
+        mLooper.dispatchAll();
+
+        verify(mWifiMonitor, atLeastOnce())
+                .deregisterHandler(eq(WIFI_IFACE_NAME), anyInt(), any());
+        verify(mWifiMetrics).deregisterForWifiMonitorEvents(WIFI_IFACE_NAME);
+        verify(mWifiLastResortWatchdog).deregisterForWifiMonitorEvents(WIFI_IFACE_NAME);
+        verify(mSupplicantStateTracker).deregisterForWifiMonitorEvents(WIFI_IFACE_NAME);
     }
 
     @Test
