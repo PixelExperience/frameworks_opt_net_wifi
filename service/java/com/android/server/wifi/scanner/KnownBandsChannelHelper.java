@@ -35,8 +35,11 @@ import android.net.wifi.WifiScanner.WifiBandIndex;
 import android.util.ArraySet;
 
 import com.android.server.wifi.WifiNative;
+import com.android.server.wifi.proto.WifiStatsLog;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -63,6 +66,10 @@ public class KnownBandsChannelHelper extends ChannelHelper {
     protected void setBandChannels(int[] channels2G, int[] channels5G, int[] channelsDfs,
             int[] channels6G) {
         mBandsToChannels = new WifiScanner.ChannelSpec[WIFI_BAND_COUNT][];
+
+        for (int i = 0; i < WIFI_BAND_COUNT; i++) {
+            mBandsToChannels[i] = NO_CHANNELS;
+        }
 
         if (channels2G.length != 0) {
             mBandsToChannels[WIFI_BAND_INDEX_24_GHZ] =
@@ -111,15 +118,14 @@ public class KnownBandsChannelHelper extends ChannelHelper {
             return null;
         }
 
-        WifiScanner.ChannelSpec[][] channels = new WifiScanner.ChannelSpec[WIFI_BAND_COUNT][];
+        List<WifiScanner.ChannelSpec[]> channelList = new ArrayList<>();
         for (@WifiBandIndex int index = 0; index < WIFI_BAND_COUNT; index++) {
-            if ((band & (1 << index)) != 0) {
-                channels[index] = mBandsToChannels[index];
-            } else {
-                channels[index] = NO_CHANNELS;
+            if ((band & (1 << index)) != 0 && mBandsToChannels[index].length > 0) {
+                channelList.add(mBandsToChannels[index]);
             }
         }
-        return channels;
+
+        return channelList.toArray(new WifiScanner.ChannelSpec[0][0]);
     }
 
     @Override
@@ -226,6 +232,38 @@ public class KnownBandsChannelHelper extends ChannelHelper {
     }
 
     /**
+     * Convert Wifi channel frequency to a bucketed band value.
+     *
+     * @param frequency Frequency (e.g. 2417)
+     * @return WifiBandBucket enum value (e.g. BAND_2G)
+     */
+    public static int getBand(int frequency) {
+        int band = WifiStatsLog.WIFI_HEALTH_STAT_REPORTED__BAND__UNKNOWN;
+
+        if (ScanResult.is24GHz(frequency)) {
+            band = WifiStatsLog.WIFI_HEALTH_STAT_REPORTED__BAND__BAND_2G;
+        } else if (ScanResult.is5GHz(frequency)) {
+            if (frequency <= BAND_5_GHZ_LOW_END_FREQ) {
+                band = WifiStatsLog.WIFI_HEALTH_STAT_REPORTED__BAND__BAND_5G_LOW;
+            } else if (frequency <= BAND_5_GHZ_MID_END_FREQ) {
+                band = WifiStatsLog.WIFI_HEALTH_STAT_REPORTED__BAND__BAND_5G_MIDDLE;
+            } else {
+                band = WifiStatsLog.WIFI_HEALTH_STAT_REPORTED__BAND__BAND_5G_HIGH;
+            }
+        } else if (ScanResult.is6GHz(frequency)) {
+            if (frequency <= BAND_6_GHZ_LOW_END_FREQ) {
+                band = WifiStatsLog.WIFI_HEALTH_STAT_REPORTED__BAND__BAND_6G_LOW;
+            } else if (frequency <= BAND_6_GHZ_MID_END_FREQ) {
+                band = WifiStatsLog.WIFI_HEALTH_STAT_REPORTED__BAND__BAND_6G_MIDDLE;
+            } else {
+                band = WifiStatsLog.WIFI_HEALTH_STAT_REPORTED__BAND__BAND_6G_HIGH;
+            }
+        }
+
+        return band;
+    }
+
+    /**
      * ChannelCollection that merges channels so that the optimal schedule will be generated.
      * When the max channels value is satisfied this implementation will always create a channel
      * list that includes no more than the added channels.
@@ -271,6 +309,8 @@ public class KnownBandsChannelHelper extends ChannelHelper {
         @Override
         public boolean containsBand(int band) {
             WifiScanner.ChannelSpec[][] bandChannels = getAvailableScanChannels(band);
+            if (bandChannels.length == 0) return false;
+
             for (int i = 0; i < bandChannels.length; ++i) {
                 for (int j = 0; j < bandChannels[i].length; ++j) {
                     if (!mChannels.contains(bandChannels[i][j].frequency)) {
