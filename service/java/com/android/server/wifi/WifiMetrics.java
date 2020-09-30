@@ -251,6 +251,7 @@ public class WifiMetrics {
     private int mLastPollRxLinkSpeed = -1;
     private int mLastPollFreq = -1;
     private int mLastScore = -1;
+    private boolean mAdaptiveConnectivityEnabled = true;
 
     /**
      * Metrics are stored within an instance of the WifiLog proto during runtime,
@@ -2684,7 +2685,7 @@ public class WifiMetrics {
      *
      * Also records events when the current score breaches significant thresholds.
      */
-    public void incrementWifiScoreCount(int score) {
+    public void incrementWifiScoreCount(String ifaceName, int score) {
         if (score < MIN_WIFI_SCORE || score > MAX_WIFI_SCORE) {
             return;
         }
@@ -2704,7 +2705,7 @@ public class WifiMetrics {
                 mWifiWins = wifiWins;
                 StaEvent event = new StaEvent();
                 event.type = StaEvent.TYPE_SCORE_BREACH;
-                addStaEvent(event);
+                addStaEvent(ifaceName, event);
                 // Only record the first score breach by checking whether mScoreBreachLowTimeMillis
                 // has been set to -1
                 if (!wifiWins && mScoreBreachLowTimeMillis == -1) {
@@ -4971,7 +4972,7 @@ public class WifiMetrics {
                 return;
         }
         if (logEvent) {
-            addStaEvent(event);
+            addStaEvent(ifaceName, event);
         }
     }
     /**
@@ -4979,8 +4980,8 @@ public class WifiMetrics {
      * generated event types, which are logged through 'sendMessage'
      * @param type StaEvent.EventType describing the event
      */
-    public void logStaEvent(int type) {
-        logStaEvent(type, StaEvent.DISCONNECT_UNKNOWN, null);
+    public void logStaEvent(String ifaceName, int type) {
+        logStaEvent(ifaceName, type, StaEvent.DISCONNECT_UNKNOWN, null);
     }
     /**
      * Log a StaEvent from ClientModeImpl. The StaEvent must not be one of the supplicant
@@ -4988,8 +4989,8 @@ public class WifiMetrics {
      * @param type StaEvent.EventType describing the event
      * @param config WifiConfiguration for a framework initiated connection attempt
      */
-    public void logStaEvent(int type, WifiConfiguration config) {
-        logStaEvent(type, StaEvent.DISCONNECT_UNKNOWN, config);
+    public void logStaEvent(String ifaceName, int type, WifiConfiguration config) {
+        logStaEvent(ifaceName, type, StaEvent.DISCONNECT_UNKNOWN, config);
     }
     /**
      * Log a StaEvent from ClientModeImpl. The StaEvent must not be one of the supplicant
@@ -4998,8 +4999,8 @@ public class WifiMetrics {
      * @param frameworkDisconnectReason StaEvent.FrameworkDisconnectReason explaining why framework
      *                                  initiated a FRAMEWORK_DISCONNECT
      */
-    public void logStaEvent(int type, int frameworkDisconnectReason) {
-        logStaEvent(type, frameworkDisconnectReason, null);
+    public void logStaEvent(String ifaceName, int type, int frameworkDisconnectReason) {
+        logStaEvent(ifaceName, type, frameworkDisconnectReason, null);
     }
     /**
      * Log a StaEvent from ClientModeImpl. The StaEvent must not be one of the supplicant
@@ -5009,7 +5010,8 @@ public class WifiMetrics {
      *                                  initiated a FRAMEWORK_DISCONNECT
      * @param config WifiConfiguration for a framework initiated connection attempt
      */
-    public void logStaEvent(int type, int frameworkDisconnectReason, WifiConfiguration config) {
+    public void logStaEvent(String ifaceName, int type, int frameworkDisconnectReason,
+            WifiConfiguration config) {
         switch (type) {
             case StaEvent.TYPE_CMD_IP_CONFIGURATION_SUCCESSFUL:
             case StaEvent.TYPE_CMD_IP_CONFIGURATION_LOST:
@@ -5036,10 +5038,16 @@ public class WifiMetrics {
             event.frameworkDisconnectReason = frameworkDisconnectReason;
         }
         event.configInfo = createConfigInfo(config);
-        addStaEvent(event);
+        addStaEvent(ifaceName, event);
     }
 
-    private void addStaEvent(StaEvent staEvent) {
+    private void addStaEvent(String ifaceName, StaEvent staEvent) {
+        // Nano proto runtime will throw a NPE during serialization if interfaceName is null
+        if (ifaceName == null) {
+            Log.wtf(TAG, "Null StaEvent.ifaceName: " + staEventToString(staEvent));
+            return;
+        }
+        staEvent.interfaceName = ifaceName;
         staEvent.startTimeMillis = mClock.getElapsedSinceBootMillis();
         staEvent.lastRssi = mLastPollRssi;
         staEvent.lastFreq = mLastPollFreq;
@@ -5056,6 +5064,7 @@ public class WifiMetrics {
         if (mWifiDataStall != null) {
             staEvent.isCellularDataAvailable = mWifiDataStall.isCellularDataAvailable();
         }
+        staEvent.isAdaptiveConnectivityEnabled = mAdaptiveConnectivityEnabled;
         mSupplicantStateChangeBitmask = 0;
         mLastPollRssi = -127;
         mLastPollFreq = -1;
@@ -5286,6 +5295,7 @@ public class WifiMetrics {
         }
         sb.append(" screenOn=").append(event.screenOn);
         sb.append(" cellularData=").append(event.isCellularDataAvailable);
+        sb.append(" adaptiveConnectivity=").append(event.isAdaptiveConnectivityEnabled);
         if (event.supplicantStateChangesBitmask != 0) {
             sb.append(", ").append(supplicantStateChangesBitmaskToString(
                     event.supplicantStateChangesBitmask));
@@ -5297,6 +5307,7 @@ public class WifiMetrics {
         if (event.mobileRxBytes > 0) sb.append(" mobileRxBytes=").append(event.mobileRxBytes);
         if (event.totalTxBytes > 0) sb.append(" totalTxBytes=").append(event.totalTxBytes);
         if (event.totalRxBytes > 0) sb.append(" totalRxBytes=").append(event.totalRxBytes);
+        sb.append(" interfaceName=").append(event.interfaceName);
         return sb.toString();
     }
 
@@ -5506,6 +5517,15 @@ public class WifiMetrics {
                 break;
         }
         return result;
+    }
+
+    /**
+     * Converts Adaptive Connectivity state to UserActionEvent type.
+     * @param value
+     */
+    public static int convertAdaptiveConnectivityStateToUserActionEventType(boolean value) {
+        return value ? UserActionEvent.EVENT_CONFIGURE_ADAPTIVE_CONNECTIVITY_ON
+                : UserActionEvent.EVENT_CONFIGURE_ADAPTIVE_CONNECTIVITY_OFF;
     }
 
     static class MeteredNetworkStatsBuilder {
@@ -6104,7 +6124,8 @@ public class WifiMetrics {
      * @param score The Wi-Fi usability score.
      * @param predictionHorizonSec Prediction horizon of the Wi-Fi usability score.
      */
-    public void incrementWifiUsabilityScoreCount(int seqNum, int score, int predictionHorizonSec) {
+    public void incrementWifiUsabilityScoreCount(String ifaceName, int seqNum, int score,
+            int predictionHorizonSec) {
         if (score < MIN_WIFI_USABILITY_SCORE || score > MAX_WIFI_USABILITY_SCORE) {
             return;
         }
@@ -6127,7 +6148,7 @@ public class WifiMetrics {
                 mWifiWinsUsabilityScore = wifiWins;
                 StaEvent event = new StaEvent();
                 event.type = StaEvent.TYPE_WIFI_USABILITY_SCORE_BREACH;
-                addStaEvent(event);
+                addStaEvent(ifaceName, event);
                 // Only record the first score breach by checking whether mScoreBreachLowTimeMillis
                 // has been set to -1
                 if (!wifiWins && mScoreBreachLowTimeMillis == -1) {
@@ -6150,7 +6171,7 @@ public class WifiMetrics {
      *                      probe was ACKed. Note: this number should be correlated with the number
      *                      of retries that the driver attempted before the probe was ACKed.
      */
-    public void logLinkProbeSuccess(long timeSinceLastTxSuccessMs,
+    public void logLinkProbeSuccess(String ifaceName, long timeSinceLastTxSuccessMs,
             int rssi, int linkSpeed, int elapsedTimeMs) {
         synchronized (mLock) {
             mProbeStatusSinceLastUpdate =
@@ -6168,7 +6189,7 @@ public class WifiMetrics {
                 event.type = StaEvent.TYPE_LINK_PROBE;
                 event.linkProbeWasSuccess = true;
                 event.linkProbeSuccessElapsedTimeMs = elapsedTimeMs;
-                addStaEvent(event);
+                addStaEvent(ifaceName, event);
             }
             mLinkProbeStaEventCount++;
         }
@@ -6185,7 +6206,7 @@ public class WifiMetrics {
      * @param reason The error code for the failure. See
      * {@link WifiNl80211Manager.SendMgmtFrameError}.
      */
-    public void logLinkProbeFailure(long timeSinceLastTxSuccessMs,
+    public void logLinkProbeFailure(String ifaceName, long timeSinceLastTxSuccessMs,
             int rssi, int linkSpeed, int reason) {
         synchronized (mLock) {
             mProbeStatusSinceLastUpdate =
@@ -6203,7 +6224,7 @@ public class WifiMetrics {
                 event.type = StaEvent.TYPE_LINK_PROBE;
                 event.linkProbeWasSuccess = false;
                 event.linkProbeFailureReason = linkProbeFailureReasonToProto(reason);
-                addStaEvent(event);
+                addStaEvent(ifaceName, event);
             }
             mLinkProbeStaEventCount++;
         }
@@ -6876,6 +6897,15 @@ public class WifiMetrics {
     public void incrementNumOfCarrierWifiConnectionNonAuthFailure() {
         synchronized (mLock) {
             mCarrierWifiMetrics.numConnectionNonAuthFailure++;
+        }
+    }
+
+    /**
+     *  Set Adaptive Connectivity state (On/Off)
+     */
+    public void setAdaptiveConnectivityState(boolean adaptiveConnectivityEnabled) {
+        synchronized (mLock) {
+            mAdaptiveConnectivityEnabled = adaptiveConnectivityEnabled;
         }
     }
 }
