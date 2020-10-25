@@ -485,11 +485,24 @@ public class WifiConfigManager {
         if (config.getIpConfiguration().getIpAssignment() == IpConfiguration.IpAssignment.STATIC) {
             return false;
         }
+        if (config.isOpenNetwork() && shouldEnableEnhancedRandomizationOnOpenNetwork(config)) {
+            return true;
+        }
         if (config.isPasspoint()) {
             return isNetworkOptInForEnhancedRandomization(config.FQDN);
         } else {
             return isNetworkOptInForEnhancedRandomization(config.SSID);
         }
+    }
+
+    private boolean shouldEnableEnhancedRandomizationOnOpenNetwork(WifiConfiguration config) {
+        if (!mDeviceConfigFacade.allowEnhancedMacRandomizationOnOpenSsids()
+                && !mContext.getResources().getBoolean(
+                        R.bool.config_wifiAllowEnhancedMacRandomizationOnOpenSsids)) {
+            return false;
+        }
+        return config.getNetworkSelectionStatus().hasEverConnected()
+                && config.getNetworkSelectionStatus().hasNeverDetectedCaptivePortal();
     }
 
     private boolean isNetworkOptInForEnhancedRandomization(String ssidOrFqdn) {
@@ -954,7 +967,9 @@ public class WifiConfigManager {
         if (!isConfigEligibleForLockdown) {
             // App that created the network or settings app (i.e user) has permission to
             // modify the network.
-            return isCreator || mWifiPermissionsUtil.checkNetworkSettingsPermission(uid);
+            return isCreator
+                    || mWifiPermissionsUtil.checkNetworkSettingsPermission(uid)
+                    || mWifiPermissionsUtil.checkNetworkSetupWizardPermission(uid);
         }
 
         final ContentResolver resolver = mContext.getContentResolver();
@@ -962,7 +977,9 @@ public class WifiConfigManager {
                 Settings.Global.WIFI_DEVICE_OWNER_CONFIGS_LOCKDOWN, 0) != 0;
         return !isLockdownFeatureEnabled
                 // If not locked down, settings app (i.e user) has permission to modify the network.
-                && mWifiPermissionsUtil.checkNetworkSettingsPermission(uid);
+                && (mWifiPermissionsUtil.checkNetworkSettingsPermission(uid)
+                || mWifiPermissionsUtil.checkNetworkSetupWizardPermission(uid));
+
     }
 
     /**
